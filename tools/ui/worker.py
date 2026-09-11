@@ -36,6 +36,7 @@ from ..repo import (
     RepoError,
     changelog_path,
     default_cache_dir,
+    ensure_repo,
     repo_head,
     repo_update_available,
 )
@@ -158,7 +159,7 @@ def update_data_worker(parent: QObject | None = None) -> TaskWorker:
             raise ValueError(
                 f"no local hash data — click '{_UPDATE_BUTTON}' to download it first."
             )
-        heads = {variant: repo_head(dir) for variant, dir in repo_dirs.items()}
+        heads = {variant: repo_head(cache) for variant, cache in repo_dirs.items()}
         structure = structure_for(datasets)
         return repo_dirs, datasets, heads, structure
 
@@ -181,7 +182,7 @@ def load_all_data_worker(parent: QObject | None = None) -> TaskWorker:
             raise ValueError(
                 f"no local hash data — click '{_UPDATE_BUTTON}' to download it first."
             )
-        heads = {variant: repo_head(dir) for variant, dir in caches.items()}
+        heads = {variant: repo_head(cache) for variant, cache in caches.items()}
         structure = structure_for(datasets)
         return caches, datasets, heads, structure
 
@@ -218,7 +219,9 @@ def analyze_worker(
 
     def job():
         return analyze_mods(
-            mods_dir, mapping, structure if structure is not None else structure_for(mapping)
+            Path(mods_dir),
+            mapping,
+            structure if structure is not None else structure_for(mapping),
         )
 
     return TaskWorker(job, parent=parent)
@@ -229,12 +232,16 @@ def structure_for(datasets: Mapping[str, FixerData]) -> StructureData | None:
     if not datasets:
         return None
     dbs = {variant: data.db for variant, data in datasets.items()}
-    pairs = [
-        (entry.from_hash, entry.to_hash)
-        for data in datasets.values()
-        for entry in data.entries
-        if entry.from_hash and entry.to_hash
-    ]
+    pairs: list[tuple[str, str]] = []
+    for data in datasets.values():
+        for entry in data.entries:
+            from_hash = entry.from_hash
+            to_hash = entry.to_hash
+            if not from_hash:
+                continue
+            if not to_hash:
+                continue
+            pairs.append((from_hash, to_hash))
     return build_structure(dbs, chain_pairs=pairs)
 
 
@@ -266,16 +273,21 @@ def fix_mod_worker(
             variant: known_hashes(data) for variant, data in datasets.items()
         }
         variant = detect_variant(hashes, datasets, known_sets) or DEFAULT_VARIANT
-        data = datasets.get(variant)
-        if data is None:
+        loaded = datasets.get(variant)
+        if loaded is None:
             raise ValueError(
                 f"{variant} hash data is not loaded — click 'Update hashes' first."
             )
+        data = loaded
         if structure is None:
             structure = structure_for(datasets)
-        scan = scan_folder if is_dir else scan_files
-        scan_arg = paths[0] if is_dir else paths
-        plans = scan(scan_arg, data, structure=structure)
+
+        def rescan() -> list[FilePlan]:
+            if is_dir:
+                return scan_folder(paths[0], data, structure=structure)
+            return scan_files(paths, data, structure=structure)
+
+        plans = rescan()
         written_paths: set[str] = set()
         backed_up: set[str] = set()
         for _pass in range(4):
@@ -298,7 +310,7 @@ def fix_mod_worker(
                     wrote_any = True
             if not wrote_any:
                 break
-            plans = scan(scan_arg, data, structure=structure)
+            plans = rescan()
         if is_dir:
             tables = load_blend_remaps()
             for target in scan_blend_targets(paths[0], tables):
