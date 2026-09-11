@@ -1,0 +1,297 @@
+"""App-local fix-backup store and backup-name helpers.
+
+Fix backups live outside the mods folder, in one per-mods-folder store directory under the app-local backups dir whose tree mirrors the mods folder's tree keyed on the CANONICAL relative path: a leading "DISABLED_" is stripped from every DIRECTORY component (any level) while the FILENAME is never canonicalized, so one logical file keeps a single merged history across mod-manager toggles. New backups are named "{live name} -- {YYYY-MM-DD HH.MM.SS}.bak" (collisions get " (2)", " (3)" ... before ".bak") while legacy backups keep the "DISABLED_versionfix_<utc millis>-<name>" convention, and same-stamp chain ties order by that dup suffix, then filename.
+Decoding a store path resolves the ACTUAL current file for the canonical key: the canonical live path (mods_dir / <canonical dirs> / <name>) when it exists; otherwise, for shallow trees (at most 4 directory components), the first existing path that re-prefixes "DISABLED_" onto a subset of those components; otherwise the canonical live path, which revert can still recreate.
+"""
+
+import os
+import re
+import shutil
+from collections.abc import Iterator, Sequence
+from dataclasses import dataclass
+from datetime import datetime
+from hashlib import sha1
+from pathlib import Path
+
+from .repo import project_root
+
+BACKUP_PREFIX = "DISABLED_versionfix_"
+FOREIGN_BACKUP_PREFIX = "DISABLED_BACKUP_"
+BACKUP_NAME_RE = re.compile(r"^DISABLED_versionfix_(?P<stamp>\d+)-(?P<name>.+)$")
+STORE_BACKUP_NAME_RE = re.compile(
+    r"^(?P<name>.+) -- (?P<when>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2})(?: \((?P<dup>\d+)\))?\.bak$"
+)
+
+
+@dataclass
+class BackupChain:
+    """All fix backups of one live .ini file, ascending by fix stamp."""
+
+    live: Path
+    backups: list[tuple[int, Path]]
+
+
+def default_backups_dir() -> Path:
+    """Default store: <project root>/backups (sibling of the data/ cache dir)."""
+    return project_root() / "backups"
+
+
+def folder_key(mods_dir: Path) -> str:
+    """Stable per-mods-folder key: sanitized root name + 8-char hash of the abs path.
+
+    Non-[A-Za-z0-9_-] characters become "_"; an empty or whitespace-only
+    name falls back to "mods".
+    """
+    mods_dir = Path(mods_dir)
+    name = mods_dir.name.strip()
+    if not name:
+        name = "mods"
+    sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", name)
+    digest = sha1(str(mods_dir.resolve()).encode("utf-8")).hexdigest()[:8]
+    return f"{sanitized}-{digest}"
+
+
+def store_root(store_dir: Path, mods_dir: Path) -> Path:
+    """The store folder for one mods folder: store_dir / folder_key(mods_dir)."""
+    return Path(store_dir) / folder_key(mods_dir)
+
+
+def store_folder_for_mod(store_dir: Path, mods_dir: Path, mod_path: Path) -> Path:
+    """Store mirror folder for one mod directory (canonical DISABLED_-stripped key).
+
+    Raises ValueError when mod_path is not strictly under mods_dir.
+    """
+    rel = Path(mod_path).relative_to(Path(mods_dir))
+    return store_root(store_dir, mods_dir).joinpath(*_canonical_dirs(rel.parts))
+
+
+def store_folder_to_open(store_dir: Path, mods_dir: Path, mod_path: Path) -> Path:
+    """Folder to open for a mod's backups: the mod's store folder when it exists.
+
+    Falls back to the store root, then the store dir; when none of them exist
+    the mods folder is returned so the caller always opens something sensible.
+    """
+    store_dir = Path(store_dir)
+    candidates = (
+        store_folder_for_mod(store_dir, mods_dir, mod_path),
+        store_root(store_dir, mods_dir),
+        store_dir,
+    )
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate
+    return Path(mods_dir)
+
+
+_DISABLED_TOGGLE = "DISABLED_"
+
+
+def _canonical_dirs(dirs: Sequence[str]) -> tuple[str, ...]:
+    """Directory components with a leading DISABLED_ stripped (canonical store key).
+
+    This is the canonical form both store writes and store reads key on, so a file's history merges into one chain across mod-manager DISABLED_ toggles at any directory level. Only directories: the filename is never canonicalized (files named DISABLED_x.ini keep exact keying).
+    """
+    return tuple(part.removeprefix(_DISABLED_TOGGLE) for part in dirs)
+
+
+def _resolve_live_path(mods_dir: Path, canonical_dirs: Sequence[str], name: str) -> Path:
+    """The actual current file for a canonical store path (see module docstring).
+
+    The canonical live path when it exists; otherwise, for at most 4 directory components, the first existing path that re-prefixes DISABLED_ onto a subset of them (masks 1..2^k-1 in ascending numeric order, so component 0 toggles first); otherwise the canonical live path, which may not exist (revert recreates it).
+    """
+    canonical = mods_dir.joinpath(*canonical_dirs, name)
+    if canonical.exists():
+        return canonical
+    dirs = tuple(canonical_dirs)
+    if 0 < len(dirs) <= 4:
+        for mask in range(1, 1 << len(dirs)):
+            toggled = tuple(
+                _DISABLED_TOGGLE + part if (mask >> i) & 1 else part
+                for i, part in enumerate(dirs)
+            )
+            candidate = mods_dir.joinpath(*toggled, name)
+            if candidate.exists():
+                return candidate
+    return canonical
+
+
+def backup_path_for(
+    store_dir: Path, mods_dir: Path, live_path: Path, stamp: int
+) -> Path:
+    """Store destination for one backup: mirrors the canonical relpath of live_path."""
+    mods_dir = Path(mods_dir)
+    live_path = Path(live_path)
+    try:
+        rel = live_path.relative_to(mods_dir)
+    except ValueError:
+        raise ValueError(f"{live_path} is not under {mods_dir}") from None
+    if not rel.parts:
+        raise ValueError(f"{live_path} is not strictly under {mods_dir}")
+    local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    rel_dirs = rel.parent.parts
+    store_folder = store_root(store_dir, mods_dir).joinpath(*_canonical_dirs(rel_dirs))
+    destination = store_folder / f"{live_path.name} -- {local}.bak"
+    dup = 1
+    while destination.exists():
+        dup += 1
+        destination = store_folder / f"{live_path.name} -- {local} ({dup}).bak"
+    return destination
+
+
+def parse_store_backup_name(filename: str) -> tuple[int, str] | None:
+    """Decode one new-scheme store backup filename.
+
+    Returns (stamp millis, live filename) for a "{name} -- YYYY-MM-DD HH.MM.SS[ (dup)].bak" file, or None otherwise. The timestamp parses as local time (matching how it was written), so a DST fall-back duplicate maps to the same epoch second. Legacy DISABLED_versionfix_<stamp>-<name> files never match here; read them with BACKUP_NAME_RE.
+    """
+    match = STORE_BACKUP_NAME_RE.match(filename)
+    if match is None:
+        return None
+    stamp = int(
+        datetime.strptime(match.group("when"), "%Y-%m-%d %H.%M.%S").timestamp() * 1000
+    )
+    return stamp, match.group("name")
+
+
+def _decode_backup_name(filename: str) -> tuple[int, str, int] | None:
+    """(stamp millis, live filename, dup index) under either scheme, else None.
+
+    New-scheme names ("{name} -- when[ (n)].bak") parse as local time (a DST fall-back duplicate maps to the same epoch second); the dup index is the " (n)" suffix, 0 for a plain name. Legacy DISABLED_versionfix_<stamp>-<name> names parse via BACKUP_NAME_RE with dup index 0. None is returned when neither scheme matches (e.g. foreign backups), so callers skip those.
+    """
+    match = STORE_BACKUP_NAME_RE.match(filename)
+    if match is not None:
+        stamp = int(
+            datetime.strptime(match.group("when"), "%Y-%m-%d %H.%M.%S").timestamp() * 1000
+        )
+        dup = match.group("dup")
+        return stamp, match.group("name"), int(dup) if dup is not None else 0
+    match = BACKUP_NAME_RE.match(filename)
+    if match is None:
+        return None
+    return int(match.group("stamp")), match.group("name"), 0
+
+
+def _backup_candidates(store_dir: Path, recursive: bool = False) -> list[Path]:
+    """*.ini and *.bak files in store_dir, sorted by string path.
+
+    ``recursive`` walks subdirectories too (collect_backup_chains scans the whole store tree); the default lists direct children only (collect_backup_chains_for scans one file's canonical dir).
+    """
+    if recursive:
+        found = (*store_dir.rglob("*.ini"), *store_dir.rglob("*.bak"))
+    else:
+        found = (*store_dir.glob("*.ini"), *store_dir.glob("*.bak"))
+    return sorted(found, key=lambda item: str(item))
+
+
+def is_backup_name(name: str) -> bool:
+    """True for files starting with either backup convention (case-sensitive)."""
+    return name.startswith(BACKUP_PREFIX) or name.startswith(FOREIGN_BACKUP_PREFIX)
+
+
+def is_backup_dir_part(part: str) -> bool:
+    """True for directory components starting with either backup convention."""
+    return is_backup_name(part)
+
+
+def is_backup_path(parts: tuple[str, ...]) -> bool:
+    """True for a relative path whose filename or any directory component
+    uses either backup convention."""
+    return is_backup_name(parts[-1]) or any(
+        is_backup_dir_part(part) for part in parts[:-1]
+    )
+
+
+def included_ini_files(root: Path) -> Iterator[Path]:
+    """Every .ini under root that is not backup-named, sorted.
+
+    Yields each *.ini under root recursively, sorted by string path, whose relative-path parts pass is_backup_path: the filename or any directory component starts with neither backup convention.
+    """
+    for path in sorted(root.rglob("*.ini"), key=lambda item: str(item)):
+        if not is_backup_path(path.relative_to(root).parts):
+            yield path
+
+
+def move_file(src: Path, dst: Path) -> None:
+    """Move src to dst, cross-volume safe.
+
+    Tries os.replace first; when that fails (e.g. across volumes), creates dst's parent, copies src to dst (metadata kept, symlinks not followed) and removes src.
+    """
+    src = Path(src)
+    dst = Path(dst)
+    try:
+        os.replace(src, dst)
+    except OSError:
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst, follow_symlinks=False)
+        os.remove(src)
+
+
+def collect_backup_chains(
+    mods_dir: Path, store_dir: Path, subtree: Path | None = None
+) -> dict[Path, BackupChain]:
+    """Group backups in the store by resolved live file, optionally under a subtree."""
+    mods_dir = Path(mods_dir)
+    root = store_root(store_dir, mods_dir)
+    if not root.is_dir():
+        return {}
+    subtree_root = mods_dir / subtree if subtree is not None else None
+    groups: dict[Path, list[tuple[int, Path, int]]] = {}
+    for backup in _backup_candidates(root, recursive=True):
+        decoded = _decode_backup_name(backup.name)
+        if decoded is None:
+            continue
+        stamp, name, dup = decoded
+        canonical_dirs = _canonical_dirs(backup.parent.relative_to(root).parts)
+        live = _resolve_live_path(mods_dir, canonical_dirs, name)
+        if subtree_root is not None and not live.is_relative_to(subtree_root):
+            continue
+        groups.setdefault(live, []).append((stamp, backup, dup))
+    return {
+        live: BackupChain(
+            live=live,
+            backups=[
+                (stamp, backup)
+                for stamp, backup, _ in sorted(
+                    entries,
+                    key=lambda entry: (entry[0], entry[2], entry[1].name),
+                )
+            ],
+        )
+        for live, entries in groups.items()
+    }
+
+
+def collect_backup_chains_for(
+    paths: Sequence[Path], mods_dir: Path, store_dir: Path
+) -> dict[Path, BackupChain]:
+    mods_dir = Path(mods_dir)
+    root = store_root(store_dir, mods_dir)
+    chains: dict[Path, BackupChain] = {}
+    seen: set[Path] = set()
+    for path in paths:
+        path = Path(path)
+        if path in seen:
+            continue
+        seen.add(path)
+        rel = path.relative_to(mods_dir)
+        entries: list[tuple[int, Path, int]] = []
+        scan_dir = root.joinpath(*_canonical_dirs(rel.parent.parts))
+        for backup in _backup_candidates(scan_dir):
+            decoded = _decode_backup_name(backup.name)
+            if decoded is None:
+                continue
+            stamp, name, dup = decoded
+            if name != path.name:
+                continue
+            entries.append((stamp, backup, dup))
+        if entries:
+            chains[path] = BackupChain(
+                live=path,
+                backups=[
+                    (stamp, backup)
+                    for stamp, backup, _ in sorted(
+                        entries,
+                        key=lambda entry: (entry[0], entry[2], entry[1].name),
+                    )
+                ],
+            )
+    return chains
