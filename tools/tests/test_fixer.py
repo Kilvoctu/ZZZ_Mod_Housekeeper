@@ -43,7 +43,7 @@ from tools.fixer import (
 from tools.legacy import merge_entries
 from tools.model import ChangeEntry, Character, Component, FixSuggestion
 from tools.structure import latin_suffix
-from tools.tests._test_data import LEGACY_ENTRY, SNAPSHOT_CHANGELOG, make_repo
+from tools.tests._test_data import SNAPSHOT_CHANGELOG, make_repo
 
 SAMPLE_CHANGELOG = """===============================================================================
   版本 3.1 -> 3.11
@@ -969,19 +969,19 @@ def test_backup_path_for_new_scheme(tmp_path):
     mods = tmp_path / "mods"
     mods.mkdir()
     store = tmp_path / "store"
-    live = mods / "Promeia.ini"
+    live = mods / "CharaA.ini"
     stamp = 1788950506000
     dst = backup_path_for(store, mods, live, stamp)
     local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
-    assert dst == store_root(store, mods) / f"Promeia.ini -- {local}.bak"
-    assert parse_store_backup_name(dst.name) == (stamp, "Promeia.ini")
+    assert dst == store_root(store, mods) / f"CharaA.ini -- {local}.bak"
+    assert parse_store_backup_name(dst.name) == (stamp, "CharaA.ini")
 
 
 def test_backup_path_for_collision_suffix(tmp_path):
     mods = tmp_path / "mods"
     mods.mkdir()
     store = tmp_path / "store"
-    live = mods / "Promeia.ini"
+    live = mods / "CharaA.ini"
     stamp = 1788950506000
     first = backup_path_for(store, mods, live, stamp)
     first.parent.mkdir(parents=True)
@@ -990,7 +990,7 @@ def test_backup_path_for_collision_suffix(tmp_path):
     second = backup_path_for(store, mods, live, stamp)
 
     local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
-    assert second.name == f"Promeia.ini -- {local} (2).bak"
+    assert second.name == f"CharaA.ini -- {local} (2).bak"
     assert second != first
 
 
@@ -1051,20 +1051,20 @@ def test_canonical_dirs_strips_disabled_prefix():
 def test_backup_path_for_strips_disabled_dirs(tmp_path):
     mods = tmp_path / "mods"
     store = tmp_path / "store"
-    live = mods / "DISABLED_modA" / "Promeia.ini"
+    live = mods / "DISABLED_modA" / "CharaA.ini"
     stamp = 1788950506000
     dst = backup_path_for(store, mods, live, stamp)
     local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
-    assert dst == store_root(store, mods) / "modA" / f"Promeia.ini -- {local}.bak"
-    assert parse_store_backup_name(dst.name) == (stamp, "Promeia.ini")
+    assert dst == store_root(store, mods) / "modA" / f"CharaA.ini -- {local}.bak"
+    assert parse_store_backup_name(dst.name) == (stamp, "CharaA.ini")
 
 
 def test_backup_path_for_both_states_same_store_path(tmp_path):
     mods = tmp_path / "mods"
     store = tmp_path / "store"
     stamp = 1788950506000
-    disabled = backup_path_for(store, mods, mods / "DISABLED_modA" / "Promeia.ini", stamp)
-    enabled = backup_path_for(store, mods, mods / "modA" / "Promeia.ini", stamp)
+    disabled = backup_path_for(store, mods, mods / "DISABLED_modA" / "CharaA.ini", stamp)
+    enabled = backup_path_for(store, mods, mods / "modA" / "CharaA.ini", stamp)
     assert disabled == enabled
 
 
@@ -1133,11 +1133,11 @@ def test_resolve_live_path_missing_falls_back_to_canonical(tmp_path):
 def test_collect_backup_chains_subtree_matches_toggled_name(tmp_path):
     mods, store, key_dir = store_layout(tmp_path)
     stamp = 1788950506000
-    backup = backup_path_for(store, mods, mods / "DISABLED_modA" / "Promeia.ini", stamp)
+    backup = backup_path_for(store, mods, mods / "DISABLED_modA" / "CharaA.ini", stamp)
     backup.parent.mkdir(parents=True)
     backup.write_text(S1, encoding="utf-8")
 
-    disabled_live = mods / "DISABLED_modA" / "Promeia.ini"
+    disabled_live = mods / "DISABLED_modA" / "CharaA.ini"
     disabled_live.parent.mkdir(parents=True)
     disabled_live.write_text(S2, encoding="utf-8")
     toggled = collect_backup_chains(mods, store, subtree=mods / "DISABLED_modA")
@@ -1147,7 +1147,7 @@ def test_collect_backup_chains_subtree_matches_toggled_name(tmp_path):
 
     disabled_live.unlink()
     disabled_live.parent.rmdir()
-    enabled_live = mods / "modA" / "Promeia.ini"
+    enabled_live = mods / "modA" / "CharaA.ini"
     enabled_live.parent.mkdir(parents=True)
     enabled_live.write_text(S3, encoding="utf-8")
     enabled = collect_backup_chains(mods, store, subtree=mods / "modA")
@@ -1158,10 +1158,10 @@ def test_collect_backup_chains_subtree_matches_toggled_name(tmp_path):
 def test_collect_backup_chains_for_matches_across_toggle(tmp_path):
     mods, store, key_dir = store_layout(tmp_path)
     stamp = 1788950506000
-    backup = backup_path_for(store, mods, mods / "DISABLED_modA" / "Promeia.ini", stamp)
+    backup = backup_path_for(store, mods, mods / "DISABLED_modA" / "CharaA.ini", stamp)
     backup.parent.mkdir(parents=True)
     backup.write_text(S1, encoding="utf-8")
-    disabled_live = mods / "DISABLED_modA" / "Promeia.ini"
+    disabled_live = mods / "DISABLED_modA" / "CharaA.ini"
     disabled_live.parent.mkdir(parents=True)
     disabled_live.write_text(S2, encoding="utf-8")
 
@@ -1174,7 +1174,7 @@ def test_collect_backup_chains_for_matches_across_toggle(tmp_path):
 
     disabled_live.unlink()
     disabled_live.parent.rmdir()
-    enabled_live = mods / "modA" / "Promeia.ini"
+    enabled_live = mods / "modA" / "CharaA.ini"
     enabled_live.parent.mkdir(parents=True)
     enabled_live.write_text(S3, encoding="utf-8")
     enabled = collect_backup_chains_for([enabled_live], mods, store)
@@ -1185,8 +1185,8 @@ def test_collect_backup_chains_for_matches_across_toggle(tmp_path):
 def test_two_state_chain_merges_and_orders(tmp_path, monkeypatch):
     mods = tmp_path / "mods"
     store = tmp_path / "store"
-    live = mods / "modA" / "Promeia.ini"
-    stale = "[TextureOverridePromeia]\nhash = 8c0622d7\n"
+    live = mods / "modA" / "CharaA.ini"
+    stale = "[TextureOverrideCharaA]\nhash = 8c0622d7\n"
     live.parent.mkdir(parents=True)
     live.write_text(stale, encoding="utf-8")
     original = live.read_bytes()
@@ -1196,24 +1196,24 @@ def test_two_state_chain_merges_and_orders(tmp_path, monkeypatch):
     monkeypatch.setattr(fixer.time, "time", lambda: next(stamps) / 1000)
     data = build_data(
         [
-            entry("8c0622d7", "018ea72c", ["Promeia"]),
-            entry("f6474154", "08ddaed3", ["Promeia"]),
+            entry("8c0622d7", "018ea72c", ["CharaA"]),
+            entry("f6474154", "08ddaed3", ["CharaA"]),
         ]
     )
     key_dir = store_root(store, mods)
     local_a = datetime.fromtimestamp(stamp_a / 1000).strftime("%Y-%m-%d %H.%M.%S")
     local_b = datetime.fromtimestamp(stamp_b / 1000).strftime("%Y-%m-%d %H.%M.%S")
-    first_backup = key_dir / "modA" / f"Promeia.ini -- {local_a}.bak"
-    second_backup = key_dir / "modA" / f"Promeia.ini -- {local_b}.bak"
+    first_backup = key_dir / "modA" / f"CharaA.ini -- {local_a}.bak"
+    second_backup = key_dir / "modA" / f"CharaA.ini -- {local_b}.bak"
 
     (plan,) = scan_folder(mods, data)
     assert apply_plan(plan, data, store_dir=store, mods_dir=mods, log=quiet) is True
     assert first_backup.read_bytes() == original
 
     shutil.move(str(mods / "modA"), str(mods / "DISABLED_modA"))
-    disabled_live = mods / "DISABLED_modA" / "Promeia.ini"
+    disabled_live = mods / "DISABLED_modA" / "CharaA.ini"
     disabled_live.write_text(
-        "[TextureOverridePromeia]\nhash = f6474154\n", encoding="utf-8"
+        "[TextureOverrideCharaA]\nhash = f6474154\n", encoding="utf-8"
     )
     pre_second_fix = disabled_live.read_bytes()
 
@@ -1346,8 +1346,8 @@ def round_trip_data():
     later version, so dd86f5ae content is already in its latest state."""
     return build_data(
         [
-            entry("dd86f5ae", "19ad87f6", ["Promeia"], version_index=1),
-            entry("19ad87f6", "dd86f5ae", ["Promeia"], version_index=2),
+            entry("dd86f5ae", "19ad87f6", ["CharaA"], version_index=1),
+            entry("19ad87f6", "dd86f5ae", ["CharaA"], version_index=2),
         ]
     )
 
@@ -1378,9 +1378,9 @@ def test_hash_is_outdated_round_trip_false():
 
 def test_scan_text_round_trip_no_suggestion():
     data = round_trip_data()
-    text = "[TextureOverridePromeia]\nhash = dd86f5ae\n"
+    text = "[TextureOverrideCharaA]\nhash = dd86f5ae\n"
     assert fixer._scan_text(text, data) == []
-    text = "[TextureOverridePromeia]\nhash = 19ad87f6\n"
+    text = "[TextureOverrideCharaA]\nhash = 19ad87f6\n"
     assert [
         (s.kind, s.line_no, s.old, s.new) for s in fixer._scan_text(text, data)
     ] == [("hash", 2, "19ad87f6", "dd86f5ae")]
@@ -1388,8 +1388,8 @@ def test_scan_text_round_trip_no_suggestion():
 
 def test_apply_plan_round_trip_writes_nothing_no_backup(tmp_path):
     data = round_trip_data()
-    live = tmp_path / "Promeia.ini"
-    content = "[TextureOverridePromeia]\nhash = dd86f5ae\n"
+    live = tmp_path / "CharaA.ini"
+    content = "[TextureOverrideCharaA]\nhash = dd86f5ae\n"
     live.write_text(content, encoding="utf-8")
     store = tmp_path / "store"
     logs: list[str] = []
@@ -1411,13 +1411,13 @@ def test_apply_plan_round_trip_writes_nothing_no_backup(tmp_path):
 
 
 def test_apply_plan_drops_noop_suggestions(tmp_path, monkeypatch):
-    live = tmp_path / "Promeia.ini"
-    content = "[TextureOverridePromeia]\nhash = dd86f5ae\n"
+    live = tmp_path / "CharaA.ini"
+    content = "[TextureOverrideCharaA]\nhash = dd86f5ae\n"
     live.write_text(content, encoding="utf-8")
     store = tmp_path / "store"
     noop = FixSuggestion(
         file=str(live),
-        section="TextureOverridePromeia",
+        section="TextureOverrideCharaA",
         line_no=2,
         kind="hash",
         old="dd86f5ae",
@@ -1496,7 +1496,14 @@ def hint_gated_legacy_data():
     aaaa0000 -> bbbb0000 is a legacy-only bucket (role "legacy") firing only
     through a matching hint; dddd0000 lives only in the character-DB reverse index.
     """
-    legacy = LEGACY_ENTRY
+    legacy = ChangeEntry(
+        from_hash="aaaa0000",
+        to_hash="bbbb0000",
+        characters=["charab"],
+        role="legacy",
+        version_label="1.0 -> 1.2",
+        version_index=1,
+    )
     db = CharacterDB()
     db.reverse = {"dddd0000": []}
     return FixerData(
@@ -1510,12 +1517,12 @@ def hint_gated_legacy_data():
 def test_hash_is_outdated_respects_hint():
     data = hint_gated_legacy_data()
     assert hash_is_outdated("aaaa0000", data) is False
-    assert hash_is_outdated("aaaa0000", data, "zhuyuanbodyadiffuse") is True
+    assert hash_is_outdated("aaaa0000", data, "charabbodyadiffuse") is True
     assert hash_is_outdated("aaaa0000", data, "otherchar") is False
     assert hash_is_outdated("deadbeef", data) is False
-    assert hash_is_outdated("deadbeef", data, "zhuyuanbodyadiffuse") is False
+    assert hash_is_outdated("deadbeef", data, "charabbodyadiffuse") is False
     assert hash_is_outdated("dddd0000", data) is False
-    assert hash_is_outdated("dddd0000", data, "zhuyuanbodyadiffuse") is False
+    assert hash_is_outdated("dddd0000", data, "charabbodyadiffuse") is False
 
 
 def test_walk_index_two_steps(tmp_path):
@@ -1667,27 +1674,27 @@ def test_pcdata_gap_fill_only_extends_unknown_chains(tmp_path, monkeypatch):
     chain gap ("importer #N") and stays strictly hint-gated like legacy."""
     changelog_text = (
         "版本 3.1 -> 3.11\n"
-        "【安比Anby】\n"
+        "【角色丙CharaC】\n"
         "IB: aaaa0003 -> aaaa0004（身体）\n"
     )
     repo_dir = make_repo(tmp_path, changelog_text, subdir="repo")
     static_paths(
         monkeypatch,
         tmp_path,
-        pcdata=[{"From": "aaaa0001", "To": "aaaa0002", "Comment": "1 Anby BodyA texcoord"}],
+        pcdata=[{"From": "aaaa0001", "To": "aaaa0002", "Comment": "1 CharaC BodyA texcoord"}],
     )
 
     data = load_fixer_data(repo_dir, include_pcdata=True)
 
     assert [e.role for e in data.entries] == ["pcdata", "ib"]
     assert [e.version_label for e in data.entries] == ["importer #1", "3.1 -> 3.11"]
-    steps = resolve_hash_chain("aaaa0001", "anbytopblend", data)
+    steps = resolve_hash_chain("aaaa0001", "charactopblend", data)
     assert steps is not None
     assert [(s.to_hash, s.version_label) for s in steps] == [
         ("aaaa0002", "importer #1")
     ]
     assert resolve_hash_chain("aaaa0001", "", data) == []
-    assert hash_is_outdated("aaaa0001", data, "anbytopblend") is True
+    assert hash_is_outdated("aaaa0001", data, "charactopblend") is True
     assert hash_is_outdated("aaaa0001", data) is False
 
 
@@ -1697,20 +1704,20 @@ def test_pcdata_does_not_touch_known_chains(tmp_path, monkeypatch):
     the entries list."""
     changelog_text = (
         "版本 3.1 -> 3.11\n"
-        "【安比Anby/妮可Nicole】\n"
+        "【角色丙CharaC/角色丁CharaD】\n"
         "texcoord_vb: bbbb0001 -> bbbb0002\n"
     )
     repo_dir = make_repo(tmp_path, changelog_text, subdir="repo")
     static_paths(
         monkeypatch,
         tmp_path,
-        pcdata=[{"From": "bbbb0001", "To": "bbbb0003", "Comment": "1 Anby BodyA texcoord"}],
+        pcdata=[{"From": "bbbb0001", "To": "bbbb0003", "Comment": "1 CharaC BodyA texcoord"}],
     )
 
     data = load_fixer_data(repo_dir, include_pcdata=True)
 
     assert [e.role for e in data.entries] == ["texcoord_vb"]
-    steps = resolve_hash_chain("bbbb0001", "anbytopblend", data)
+    steps = resolve_hash_chain("bbbb0001", "charactopblend", data)
     assert steps is not None
     assert [(s.to_hash, s.role) for s in steps] == [("bbbb0002", "texcoord_vb")]
 
@@ -1721,7 +1728,7 @@ def test_pcdata_ping_pong_intermediate_rescues_to_legacy_target(tmp_path, monkey
     edge; the ordinal-2 row out of the legacy hash is dropped."""
     changelog_text = (
         "版本 3.1 -> 3.11\n"
-        "【安比Anby】\n"
+        "【角色丙CharaC】\n"
         "draw_vb: aaaa0003 -> aaaa0004\n"
     )
     repo_dir = make_repo(tmp_path, changelog_text, subdir="repo")
@@ -1732,26 +1739,26 @@ def test_pcdata_ping_pong_intermediate_rescues_to_legacy_target(tmp_path, monkey
             {
                 "from": "cccc0001",
                 "to": "cccc0002",
-                "characters": ["piper"],
+                "characters": ["charae"],
                 "label": "1.0 -> 1.1",
             }
         ],
         pcdata=[
-            {"From": "dddd0001", "To": "cccc0001", "Comment": "1 Piper BodyA draw"},
-            {"From": "cccc0001", "To": "dddd0001", "Comment": "2 Piper BodyA draw"},
+            {"From": "dddd0001", "To": "cccc0001", "Comment": "1 CharaE BodyA draw"},
+            {"From": "cccc0001", "To": "dddd0001", "Comment": "2 CharaE BodyA draw"},
         ],
     )
 
     data = load_fixer_data(repo_dir, include_pcdata=True)
 
     assert [e.version_index for e in data.entries] == [1, 3, 4]
-    steps = resolve_hash_chain("dddd0001", "piperbody", data)
+    steps = resolve_hash_chain("dddd0001", "charaebody", data)
     assert steps is not None
     assert [(s.to_hash, s.version_label, s.role) for s in steps] == [
         ("cccc0001", "importer #1", "pcdata"),
         ("cccc0002", "1.0 -> 1.1", "legacy"),
     ]
-    steps = resolve_hash_chain("cccc0001", "piperbody", data)
+    steps = resolve_hash_chain("cccc0001", "charaebody", data)
     assert steps is not None
     assert [(s.to_hash, s.role) for s in steps] == [("cccc0002", "legacy")]
     assert resolve_hash_chain("dddd0001", "", data) == []
@@ -1764,7 +1771,7 @@ def test_pcdata_ib_remap_fill_and_counts_walk(tmp_path, monkeypatch):
     indexes arrays for kind="counts"."""
     changelog_text = (
         "版本 3.1 -> 3.11\n"
-        "【安比Anby】\n"
+        "【角色丙CharaC】\n"
         "IB: eeee0001 -> eeee0002（身体）\n"
         "  object_indexes: [0, 100] -> [0, 120]\n"
         "  texcoord_vb: ffff0001 -> ffff0003\n"
@@ -1781,7 +1788,7 @@ def test_pcdata_ib_remap_fill_and_counts_walk(tmp_path, monkeypatch):
                 "ToIndexes": "[500]",
                 "FromIndexCounts": "[200]",
                 "ToIndexCounts": "[60]",
-                "Comment": "3 Anby BodyA ib",
+                "Comment": "3 CharaC BodyA ib",
             }
         ],
     )

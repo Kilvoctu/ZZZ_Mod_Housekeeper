@@ -121,7 +121,7 @@ def test_user_patch_resolves_authoritatively():
 
 def test_scan_suggests_user_patch_rename(tmp_path):
     data = patched_data()
-    dst = tmp_path / "TriggerMod.ini"
+    dst = tmp_path / "SampleMod.ini"
     dst.write_text(
         "[TextureOverrideBody]\nhash = b9f0d595\n", encoding="utf-8", newline=""
     )

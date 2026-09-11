@@ -13,7 +13,7 @@ def test_harvest_key_single_version_log_yields_version_label():
     update_hash = type("update_hash", (), {})
 
     entries = [
-        (log, ("1.0: Ben FaceA LightMap Hash (OLD)",)),
+        (log, ("1.0: Sample FaceA LightMap Hash (OLD)",)),
         (update_hash, ("2fa5ffa7",)),
     ]
     transitions, reason = harvest_key("AAAAAAAA", entries)
@@ -27,7 +27,7 @@ def test_harvest_key_arrow_wins_over_armed_single():
     update_hash = type("update_hash", (), {})
 
     entries = [
-        (log, ("1.0: Ben FaceA LightMap Hash (OLD)",)),
+        (log, ("1.0: Sample FaceA LightMap Hash (OLD)",)),
         (log, ("1.1 -> 1.2: real dated update",)),
         (update_hash, ("2fa5ffa7",)),
     ]
@@ -57,7 +57,7 @@ def test_harvest_key_update_hash_disarms_pending():
     update_hash = type("update_hash", (), {})
 
     entries = [
-        (log, ("1.0: Ben FaceA LightMap Hash (OLD)",)),
+        (log, ("1.0: Sample FaceA LightMap Hash (OLD)",)),
         (update_hash, ("2fa5ffa7",)),
         (update_hash, ("3c3c3c3c",)),
     ]
@@ -90,7 +90,7 @@ def test_harvest_key_tolerates_structural_classes():
     add_ib_check_if_missing = type("add_ib_check_if_missing", (), {})
 
     entries = [
-        (log, ("1.0: Ben FaceA LightMap Hash (OLD)",)),
+        (log, ("1.0: Sample FaceA LightMap Hash (OLD)",)),
         (add_section_if_missing, ("IB",)),
         (multiply_section_if_missing, ("IB",)),
         (add_ib_check_if_missing, ("deadbeef",)),
@@ -111,14 +111,14 @@ def test_harvest_key_still_drops_buffer_coupled_and_destructive():
     comment_sections = type("comment_sections", (), {})
 
     buffer_coupled = [
-        (log, ("1.0: Ben FaceA LightMap Hash (OLD)",)),
+        (log, ("1.0: Sample FaceA LightMap Hash (OLD)",)),
         (zzz_13_remap_texcoord, ("IB",)),
         (update_hash, ("2fa5ffa7",)),
     ]
     assert harvest_key("AAAAAAAA", buffer_coupled) == ([], "buffer-coupled")
 
     destructive = [
-        (log, ("1.0: Ben FaceA LightMap Hash (OLD)",)),
+        (log, ("1.0: Sample FaceA LightMap Hash (OLD)",)),
         (comment_sections, ("IB",)),
         (update_hash, ("2fa5ffa7",)),
     ]

@@ -12,11 +12,11 @@ def test_normalize_latin_with_space():
 
 
 def test_normalize_keeps_cjk_and_latin_letters_lowercased():
-    assert normalize_name("安比Anby") == "安比anby"
+    assert normalize_name("角色甲CharaA") == "角色甲charaa"
 
 
 def test_normalize_drops_whole_parenthetical_segments():
-    assert normalize_name("莱特Lighter（武器）") == "莱特lighter"
+    assert normalize_name("角色乙CharaB（武器）") == "角色乙charab"
     assert normalize_name("Wise (Swim)") == "wise"
     assert normalize_name("仪玄-皮肤YixuanSkin(Night)") == "仪玄皮肤yixuanskin"
 

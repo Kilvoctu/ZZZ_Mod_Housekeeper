@@ -3,6 +3,7 @@
 from copy import deepcopy
 from pathlib import Path
 
+# noinspection PyPackageRequirements
 from PySide6.QtGui import QColor
 import pytest
 
@@ -23,7 +24,6 @@ from tools.mods import (
     set_mod_enabled,
 )
 from tools.structure import build_structure
-from tools.tests._test_data import LEGACY_ENTRY
 from tools.ui.main_window import hashes_text, updates_color, updates_text
 
 BACKUP_PREFIXES = ("DISABLED_versionfix_", "DISABLED_BACKUP_")
@@ -34,15 +34,15 @@ REAL_MODS_DIR = Path(r"G:\randomDevStuff\Test")
 
 
 def build_classify_tree(base: Path, with_root_ini: bool) -> Path:
-    """Synthetic mods tree mirroring the real GymZhuYuan/Subfolder layout.
+    """Synthetic mods tree with a loose top-level mod beside a category.
 
     with_root_ini toggles the loose root .ini: with it, the root acts as one
     mod itself and (mods.py's documented tradeoff) swallows every nested folder.
     """
     root = base / "mods"
-    (root / "GymMod").mkdir(parents=True)
-    (root / "GymMod" / "gym.ini").write_text(
-        "[TextureOverrideGym]\nhash = aaaa0000\n", encoding="utf-8"
+    (root / "LooseMod").mkdir(parents=True)
+    (root / "LooseMod" / "loose.ini").write_text(
+        "[TextureOverrideLoose]\nhash = aaaa0000\n", encoding="utf-8"
     )
     fashion = root / "Category" / "DISABLED_Fashion"
     (fashion / "body" / "0").mkdir(parents=True)
@@ -129,11 +129,11 @@ def test_tree_classification(tmp_path):
         ("category", "Category", False),
         ("file", "a.ini", False),
         ("file", "fashion.ini", False),
-        ("file", "gym.ini", False),
+        ("file", "loose.ini", False),
         ("file", "m.ini", False),
         ("file", "x.ini", False),
         ("mod", "DISABLED_Fashion", True),
-        ("mod", "GymMod", False),
+        ("mod", "LooseMod", False),
         ("mod", "LoosePack", False),
         ("root", "mods", False),
         ("subfolder", "0", False),
@@ -141,18 +141,18 @@ def test_tree_classification(tmp_path):
         ("subfolder", "body", False),
     ]
 
-    gym = by_name(tree, "GymMod")
+    loose = by_name(tree, "LooseMod")
     fashion = by_name(tree, "DISABLED_Fashion")
-    loose = by_name(tree, "LoosePack")
+    pack = by_name(tree, "LoosePack")
 
     parents = parent_map(tree)
     assert nearest_mod(by_name(tree, "a.ini"), parents) is fashion
     assert nearest_mod(by_name(tree, "m.ini"), parents) is fashion
     assert nearest_mod(by_name(tree, "fashion.ini"), parents) is fashion
-    assert nearest_mod(by_name(tree, "gym.ini"), parents) is gym
-    assert nearest_mod(by_name(tree, "x.ini"), parents) is loose
+    assert nearest_mod(by_name(tree, "loose.ini"), parents) is loose
+    assert nearest_mod(by_name(tree, "x.ini"), parents) is pack
 
-    assert [child.name for child in tree.children] == ["Category", "GymMod"]
+    assert [child.name for child in tree.children] == ["Category", "LooseMod"]
     assert [child.name for child in fashion.children] == [
         "Assets",
         "body",
@@ -171,16 +171,16 @@ def test_tree_root_acts_as_mod(tmp_path):
     assert [child.name for child in tree.children] == [
         "Category",
         "EmptyBranch",
-        "GymMod",
+        "LooseMod",
         "rogue.ini",
     ]
     assert tree.children[-1].kind == "file"
 
-    for name in ("GymMod", "DISABLED_Fashion", "LoosePack", "EmptyBranch"):
+    for name in ("LooseMod", "DISABLED_Fashion", "LoosePack", "EmptyBranch"):
         assert by_name(tree, name).kind == "subfolder"
     assert by_name(tree, "DISABLED_Fashion").disabled is True
     parents = parent_map(tree)
-    assert nearest_mod(by_name(tree, "gym.ini"), parents) is tree
+    assert nearest_mod(by_name(tree, "loose.ini"), parents) is tree
     assert nearest_mod(by_name(tree, "a.ini"), parents) is tree
 
     assert_backups_excluded(tree)
@@ -219,7 +219,7 @@ def test_mod_json_pack_collapses_parts(tmp_path):
         "[TextureOverrideP2]\nhash = cccc0000\n", encoding="utf-8"
     )
 
-    data = version_data(LADDER_ENTRIES, {"cccc0000": [HashRef("Anby", "Body", "ib")]})
+    data = version_data(LADDER_ENTRIES, {"cccc0000": [HashRef("CharaA", "Body", "ib")]})
     tree, summary = mods.analyze_mods(root, data)
 
     assert inventory(tree) == [
@@ -269,8 +269,8 @@ def test_mod_json_highest_ancestor_wins(tmp_path):
     data = version_data(
         LADDER_ENTRIES,
         {
-            "cccc0000": [HashRef("Anby", "Body", "blend_vb")],
-            "dddd0000": [HashRef("Anby", "Body", "ib")],
+            "cccc0000": [HashRef("CharaA", "Body", "blend_vb")],
+            "dddd0000": [HashRef("CharaA", "Body", "ib")],
         },
     )
     tree, summary = mods.analyze_mods(root, data)
@@ -316,6 +316,113 @@ def test_mod_json_highest_ancestor_wins(tmp_path):
     )
 
 
+def build_container_mods(base: Path) -> Path:
+    """Pack whose payload ini sits in a resources container, next to a direct-ini sibling mod."""
+    root = base / "mods"
+    category = root / "Group"
+    mod = category / "Boxed"
+    (mod / "resources").mkdir(parents=True)
+    (mod / "resources" / "r.ini").write_text(
+        "[TextureOverrideR]\nhash = aaaa0000\n", encoding="utf-8"
+    )
+    (mod / "textures").mkdir()
+    (mod / "note.txt").write_text("toggles", encoding="utf-8")
+    sibling = category / "Sibling"
+    sibling.mkdir()
+    (sibling / "s.ini").write_text("[TextureOverrideS]\n", encoding="utf-8")
+    return root
+
+
+def test_resources_container_absorbed_into_parent_mod(tmp_path):
+    root = build_container_mods(tmp_path)
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Group", False),
+        ("file", "r.ini", False),
+        ("file", "s.ini", False),
+        ("mod", "Boxed", False),
+        ("mod", "Sibling", False),
+        ("root", "mods", False),
+        ("subfolder", "resources", False),
+        ("subfolder", "textures", False),
+    ]
+    parents = parent_map(tree)
+    assert nearest_mod(by_name(tree, "r.ini"), parents) is by_name(tree, "Boxed")
+    assert nearest_mod(by_name(tree, "s.ini"), parents) is by_name(tree, "Sibling")
+    assert_backups_excluded(tree)
+
+
+def test_container_pack_with_multiple_winners_stays_category(tmp_path):
+    root = tmp_path / "mods"
+    pack = root / "Pack"
+    (pack / "resources").mkdir(parents=True)
+    (pack / "resources" / "a.ini").write_text("[TextureOverrideA]\n", encoding="utf-8")
+    (pack / "other").mkdir()
+    (pack / "other" / "b.ini").write_text("[TextureOverrideB]\n", encoding="utf-8")
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Pack", False),
+        ("file", "a.ini", False),
+        ("file", "b.ini", False),
+        ("mod", "other", False),
+        ("mod", "resources", False),
+        ("root", "mods", False),
+    ]
+
+
+def test_top_level_resources_dir_is_a_mod(tmp_path):
+    root = tmp_path / "mods"
+    (root / "resources").mkdir(parents=True)
+    (root / "resources" / "r.ini").write_text("[TextureOverrideR]\n", encoding="utf-8")
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert by_name(tree, "resources").kind == "mod"
+    assert [child.name for child in tree.children] == ["resources"]
+
+
+def test_resources_container_case_insensitive(tmp_path):
+    root = tmp_path / "mods"
+    mod = root / "Upper"
+    (mod / "Resources").mkdir(parents=True)
+    (mod / "Resources" / "r.ini").write_text("[TextureOverrideR]\n", encoding="utf-8")
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert by_name(tree, "Upper").kind == "mod"
+    assert by_name(tree, "Resources").kind == "subfolder"
+
+
+def test_single_mod_category_not_promoted(tmp_path):
+    root = tmp_path / "mods"
+    (root / "Subfolder" / "RealMod").mkdir(parents=True)
+    (root / "Subfolder" / "RealMod" / "s.ini").write_text(
+        "[TextureOverrideS]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Subfolder", False),
+        ("file", "s.ini", False),
+        ("mod", "RealMod", False),
+        ("root", "mods", False),
+    ]
+
+
+def test_promoted_mod_version_and_summary(tmp_path):
+    root = build_container_mods(tmp_path)
+    data = version_data(LADDER_ENTRIES, {"aaaa0000": [HashRef("CharaA", "Body", "ib")]})
+    tree, summary = mods.analyze_mods(root, data)
+
+    boxed = by_name(tree, "Boxed")
+    version = version_of(boxed)
+    assert (version.label, version.is_latest) == ("2.0", False)
+    assert (version.outdated_count, version.total) == (1, 1)
+    assert summary == mods.AnalysisSummary(
+        mods=2, current=0, outdated=1, unknown=1, backups_skipped=0, files_scanned=2
+    )
+
+
 def test_root_mod_json_acts_as_one_mod(tmp_path):
     root = tmp_path / "mods"
     root.mkdir()
@@ -325,7 +432,7 @@ def test_root_mod_json_acts_as_one_mod(tmp_path):
         "[TextureOverrideP]\nhash = cccc0000\n", encoding="utf-8"
     )
 
-    data = version_data(LADDER_ENTRIES, {"cccc0000": [HashRef("Anby", "Body", "ib")]})
+    data = version_data(LADDER_ENTRIES, {"cccc0000": [HashRef("CharaA", "Body", "ib")]})
     tree, summary = mods.analyze_mods(root, data)
 
     assert inventory(tree) == [
@@ -377,8 +484,8 @@ def test_disabled_backup_prefix_files_and_dirs_excluded(tmp_path):
     data = version_data(
         LADDER_ENTRIES,
         {
-            "cccc0000": [HashRef("Anby", "Body", "blend_vb")],
-            "dddd0000": [HashRef("Anby", "Body", "ib")],
+            "cccc0000": [HashRef("CharaA", "Body", "blend_vb")],
+            "dddd0000": [HashRef("CharaA", "Body", "ib")],
         },
     )
     tree, summary = mods.analyze_mods(root, data)
@@ -531,8 +638,8 @@ def test_version_classification_matrix():
     data = version_data(
         LADDER_ENTRIES,
         {
-            "cccc0000": [HashRef("Anby", "Body", "blend_vb")],
-            "dddd0000": [HashRef("Anby", "Body", "ib")],
+            "cccc0000": [HashRef("CharaA", "Body", "blend_vb")],
+            "dddd0000": [HashRef("CharaA", "Body", "ib")],
         },
     )
 
@@ -570,7 +677,7 @@ def test_version_classification_matrix():
         unknown.total,
     ) == (0, 0, 1, 1)
 
-    data.db.reverse["bbbb0000"] = [HashRef("Anby", "Body", "ib")]
+    data.db.reverse["bbbb0000"] = [HashRef("CharaA", "Body", "ib")]
     both = classify(data, ["bbbb0000"])
     assert (both.label, both.is_latest) == ("2.1", False)
     assert (
@@ -601,7 +708,7 @@ def test_version_classification_matrix():
 
 def test_version_classification_without_ladder_entries():
     data = version_data(
-        LADDER_ENTRIES, {"cccc0000": [HashRef("Anby", "Body", "blend_vb")]}
+        LADDER_ENTRIES, {"cccc0000": [HashRef("CharaA", "Body", "blend_vb")]}
     )
     empty = FixerData(
         chains=data.chains, ib_index_changes={}, db=data.db, entries=[]
@@ -620,9 +727,9 @@ def test_version_classification_without_ladder_entries():
     ) == (0, 0, 3, 3)
 
 
-def test_chain_target_without_table_row_counts_outdated():
+def test_chain_target_without_table_row_stays_unknown():
     entry = ladder_entry("aaaa0000", "bbbb0000", 1, "2.0 → 2.1")
-    data = version_data([entry], {"dddd0000": [HashRef("Anby", "Body", "ib")]})
+    data = version_data([entry], {"dddd0000": [HashRef("CharaA", "Body", "ib")]})
     version = classify(data, ["bbbb0000"])
     assert (version.label, version.is_latest, version.breaks_label) == (
         "unknown",
@@ -634,7 +741,7 @@ def test_chain_target_without_table_row_counts_outdated():
         version.outdated_count,
         version.unknown_count,
         version.total,
-    ) == (0, 1, 0, 1)
+    ) == (0, 0, 1, 1)
 
 
 def test_chain_target_with_empty_table_stays_unknown():
@@ -656,7 +763,7 @@ def test_chain_target_with_empty_table_stays_unknown():
 
 def test_round_trip_chain_target_in_table_counts_current():
     data = version_data(
-        ROUND_TRIP_ENTRIES, {"dd86f5ae": [HashRef("Promeia", "Body", "ib")]}
+        ROUND_TRIP_ENTRIES, {"dd86f5ae": [HashRef("CharaC", "Body", "ib")]}
     )
     version = classify(data, ["dd86f5ae"])
     assert (version.label, version.is_latest, version.breaks_label) == (
@@ -672,15 +779,24 @@ def test_round_trip_chain_target_in_table_counts_current():
     ) == (1, 0, 0, 1)
 
 
-LEGACY_ENTRIES = [LEGACY_ENTRY]
+LEGACY_ENTRIES = [
+    ChangeEntry(
+        from_hash="aaaa0000",
+        to_hash="bbbb0000",
+        characters=["charab"],
+        role="legacy",
+        version_label="1.0 -> 1.2",
+        version_index=1,
+    )
+]
 
 
 def test_hint_gated_legacy_edge_fires():
     data = version_data(
-        LEGACY_ENTRIES, {"cccc0000": [HashRef("ZhuYuan", "Body", "ib")]}
+        LEGACY_ENTRIES, {"cccc0000": [HashRef("CharaB", "Body", "ib")]}
     )
 
-    outdated = classify(data, ["aaaa0000"], {"aaaa0000": {"zhuyuanbodyadiffuse"}})
+    outdated = classify(data, ["aaaa0000"], {"aaaa0000": {"charabbodyadiffuse"}})
     assert (outdated.label, outdated.is_latest, outdated.breaks_label) == (
         "1.0",
         False,
@@ -704,7 +820,7 @@ def test_hint_gated_legacy_edge_fires():
         unmatched.outdated_count,
         unmatched.unknown_count,
         unmatched.total,
-    ) == (0, 1, 0, 1)
+    ) == (0, 0, 1, 1)
 
     hintless = classify(data, ["aaaa0000"])
     assert (hintless.label, hintless.is_latest, hintless.breaks_label) == (
@@ -717,15 +833,15 @@ def test_hint_gated_legacy_edge_fires():
         hintless.outdated_count,
         hintless.unknown_count,
         hintless.total,
-    ) == (0, 1, 0, 1)
+    ) == (0, 0, 1, 1)
 
 
 def test_hint_one_matching_context_among_several_is_enough():
     data = version_data(
-        LEGACY_ENTRIES, {"cccc0000": [HashRef("ZhuYuan", "Body", "ib")]}
+        LEGACY_ENTRIES, {"cccc0000": [HashRef("CharaB", "Body", "ib")]}
     )
 
-    outdated = classify(data, ["aaaa0000"], {"aaaa0000": {"unrelated", "zhuyuanbody"}})
+    outdated = classify(data, ["aaaa0000"], {"aaaa0000": {"unrelated", "charabbody"}})
     assert (outdated.label, outdated.is_latest, outdated.breaks_label) == (
         "1.0",
         False,
@@ -741,10 +857,10 @@ def test_hint_one_matching_context_among_several_is_enough():
 
 def test_hint_mixed_scope_label_from_earliest_breaking_hash():
     data = version_data(
-        LEGACY_ENTRIES, {"cccc0000": [HashRef("ZhuYuan", "Body", "ib")]}
+        LEGACY_ENTRIES, {"cccc0000": [HashRef("CharaB", "Body", "ib")]}
     )
 
-    mixed = classify(data, ["aaaa0000", "cccc0000"], {"aaaa0000": {"zhuyuanbody"}})
+    mixed = classify(data, ["aaaa0000", "cccc0000"], {"aaaa0000": {"charabbody"}})
     assert (mixed.label, mixed.is_latest) == ("1.0", False)
     assert mixed.breaks_label == "1.0 -> 1.2"
     assert (
@@ -759,14 +875,14 @@ def test_mixed_bucket_without_hint_labels_first_applied_step():
     real_row = ChangeEntry(
         from_hash="aaaa0000",
         to_hash="cccc0000",
-        characters=["zhuyuan"],
+        characters=["charab"],
         role="diffuse",
         version_label="1.2 -> 2.0",
         version_index=2,
     )
     data = version_data(
-        [LEGACY_ENTRY, real_row],
-        {"cccc0000": [HashRef("ZhuYuan", "Body", "ib")]},
+        [LEGACY_ENTRIES[0], real_row],
+        {"cccc0000": [HashRef("CharaB", "Body", "ib")]},
     )
 
     version = classify(data, ["aaaa0000"])
@@ -811,8 +927,8 @@ def test_analyze_mods_end_to_end(tmp_path):
     data = version_data(
         LADDER_ENTRIES,
         {
-            "cccc0000": [HashRef("Anby", "Body", "blend_vb")],
-            "dddd0000": [HashRef("Anby", "Body", "ib")],
+            "cccc0000": [HashRef("CharaA", "Body", "blend_vb")],
+            "dddd0000": [HashRef("CharaA", "Body", "ib")],
         },
     )
     tree, summary = mods.analyze_mods(root, data)
@@ -867,7 +983,7 @@ def test_analyze_mods_root_acts_as_mod(tmp_path):
         "[TextureOverrideN]\nhash = cccc0000\n", encoding="utf-8"
     )
 
-    data = version_data(LADDER_ENTRIES, {"cccc0000": [HashRef("Anby", "Body", "ib")]})
+    data = version_data(LADDER_ENTRIES, {"cccc0000": [HashRef("CharaA", "Body", "ib")]})
     tree, summary = mods.analyze_mods(root, data)
 
     assert tree.kind == "root"
@@ -926,8 +1042,8 @@ def test_analyze_scope_mod_matches_fresh_full_analysis(tmp_path):
     data = version_data(
         LADDER_ENTRIES,
         {
-            "cccc0000": [HashRef("Anby", "Body", "ib")],
-            "dddd0000": [HashRef("Anby", "Body", "blend_vb")],
+            "cccc0000": [HashRef("CharaA", "Body", "ib")],
+            "dddd0000": [HashRef("CharaA", "Body", "blend_vb")],
         },
     )
     tree, _summary = mods.analyze_mods(root, data)
@@ -1120,7 +1236,7 @@ def test_analyze_mods_round_trip_chain_counts_current(tmp_path):
     )
 
     data = version_data(
-        ROUND_TRIP_ENTRIES, {"dd86f5ae": [HashRef("Promeia", "Body", "ib")]}
+        ROUND_TRIP_ENTRIES, {"dd86f5ae": [HashRef("CharaC", "Body", "ib")]}
     )
     tree, summary = mods.analyze_mods(root, data)
 
@@ -1262,15 +1378,15 @@ def test_live_mods_smoke():
 
 def variant_datasets():
     """2048p/1024p FixerData pair: per-variant exclusive hash + shared mesh."""
-    shared = {"cccc0000": [HashRef("Anby", "Body", "blend_vb")]}
+    shared = {"cccc0000": [HashRef("CharaA", "Body", "blend_vb")]}
     return {
         "2048p": version_data(
             LADDER_ENTRIES,
-            {"204800aa": [HashRef("Anby", "Body", "ib")], **shared},
+            {"204800aa": [HashRef("CharaA", "Body", "ib")], **shared},
         ),
         "1024p": version_data(
             LADDER_ENTRIES,
-            {"102400bb": [HashRef("Anby", "Body", "ib")], **shared},
+            {"102400bb": [HashRef("CharaA", "Body", "ib")], **shared},
         ),
     }
 

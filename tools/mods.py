@@ -25,6 +25,7 @@ from .repo import DEFAULT_VARIANT
 from .structure import StructureData
 
 _DISABLED_PREFIX = "DISABLED_"
+_CONTAINER_DIRS = frozenset({"resources"})
 UPDATES_SIGNAL = "updates available"
 CURRENT_SIGNAL = "up to date"
 STRUCTURAL_SIGNAL = "structural"
@@ -257,7 +258,22 @@ def _mod_roots(
             if candidate in dirs_with_ini or candidate in dirs_with_mod_json:
                 mod_roots.add(candidate)
                 break
-    return mod_roots
+    promoted = {
+        winner: winner.parent
+        for winner in mod_roots
+        if (
+            winner.name.lower() in _CONTAINER_DIRS
+            and winner in dirs_with_ini
+            and len(winner.parts) >= len(root.parts) + 2
+            and winner.parent not in dirs_with_ini
+            and winner.parent not in dirs_with_mod_json
+            and not any(
+                other is not winner and winner.parent in other.parents
+                for other in mod_roots
+            )
+        )
+    }
+    return {promoted.get(winner, winner) for winner in mod_roots}
 
 
 def _build_tree(root: Path) -> tuple[ModNode, int, bool]:
@@ -396,8 +412,8 @@ def version_for_hashes(
 ) -> ModVersion:
     """Aggregate the version status of one scope's unique hashes.
 
-    Every hash is resolved once per section hint exactly the way the fixer
-    resolves it per line; table-absent chain-known hashes count as outdated.
+    Every hash is resolved once per section hint exactly the way the fixer resolves
+    it per line; hashes with no applicable rename stay unknown even when chain-known.
     """
     unique = sorted(set(hashes))
     version = ModVersion(total=len(unique))
@@ -405,10 +421,6 @@ def version_for_hashes(
     breaks_label: str | None = None
     if data.entries:
         hint_map = hints or {}
-        chain_known = set(data.chains) | {
-            entry.to_hash for entry in data.entries if entry.to_hash
-        }
-        table_present = bool(data.db.reverse)
         for hash_value in unique:
             contexts = hint_map.get(hash_value)
             if contexts:
@@ -425,8 +437,6 @@ def version_for_hashes(
                 version.current_count += 1
                 if best_rank is None or latest_index < best_rank:
                     best_rank = latest_index
-            elif table_present and hash_value in chain_known:
-                version.outdated_count += 1
             else:
                 version.unknown_count += 1
     else:

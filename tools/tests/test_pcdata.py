@@ -127,7 +127,7 @@ def test_buffer_coupled_fdc045fc_not_ingested_from_real_dataset():
     assert not any(
         e.role == "pcdata" and e.from_hash == "fdc045fc" for e in data.entries
     )
-    for hint in ("", "zhuyuanhair"):
+    for hint in ("", "charabhair"):
         assert hash_is_outdated("fdc045fc", plain, hint) == hash_is_outdated(
             "fdc045fc", data, hint
         )
@@ -146,13 +146,13 @@ def test_buffer_coupled_from_hash_skipped_in_both_gap_fill_paths(tmp_path, monke
         "tools.pcdata.buffer_coupled_hashes_path", lambda: exclusion_path
     )
     payload = [
-        {"From": from_hash, "To": "abcd5555", "Comment": "1 Anby BodyA texcoord"},
+        {"From": from_hash, "To": "abcd5555", "Comment": "1 CharaC BodyA texcoord"},
         {
             "From": from_hash,
             "To": "abcd6666",
             "FromIndexes": "[0]",
             "ToIndexes": "[7]",
-            "Comment": "2 Anby BodyA ib",
+            "Comment": "2 CharaC BodyA ib",
         },
     ]
     pcdata_path = tmp_path / "PlayerCharacterData.json"
@@ -167,7 +167,7 @@ def test_buffer_coupled_from_hash_skipped_in_both_gap_fill_paths(tmp_path, monke
     data = load_fixer_data(
         make_repo(
             tmp_path,
-            "版本 3.1 -> 3.11\n【安比Anby】\nIB: eeee0001 -> eeee0002（身体）\n",
+            "版本 3.1 -> 3.11\n【角色丙CharaC】\nIB: eeee0001 -> eeee0002（身体）\n",
             subdir="repo-chain-gap",
         ),
         include_pcdata=True,
@@ -179,7 +179,7 @@ def test_buffer_coupled_from_hash_skipped_in_both_gap_fill_paths(tmp_path, monke
     data = load_fixer_data(
         make_repo(
             tmp_path,
-            "版本 3.1 -> 3.11\n【安比Anby】\ntexcoord_vb: abcd1234 -> abcd9999\n",
+            "版本 3.1 -> 3.11\n【角色丙CharaC】\ntexcoord_vb: abcd1234 -> abcd9999\n",
             subdir="repo-remap-only",
         ),
         include_pcdata=True,

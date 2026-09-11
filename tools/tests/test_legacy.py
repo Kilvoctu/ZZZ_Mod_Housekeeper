@@ -168,11 +168,11 @@ def test_chain_resolves_legacy_then_real():
             version_index=1,
             role="legacy",
             version_label="1.0 -> 1.1",
-            characters=["名字甲anby"],
+            characters=["名字甲charaa"],
         )
     ]
     real = changelog.parse_changelog(
-        "版本 2.0 -> 2.1\n【名字甲anby】\nIB: 22222222 -> 33333333\n"
+        "版本 2.0 -> 2.1\n【名字甲charaa】\nIB: 22222222 -> 33333333\n"
     )
     assert [(e.from_hash, e.to_hash, e.version_index) for e in real] == [
         ("22222222", "33333333", 1)
@@ -184,7 +184,7 @@ def test_chain_resolves_legacy_then_real():
         db=CharacterDB(),
         entries=merged,
     )
-    steps = resolve_hash_chain("11111111", "名字甲anby", data)
+    steps = resolve_hash_chain("11111111", "名字甲charaa", data)
     assert steps is not None
     assert [(s.from_hash, s.to_hash, s.version_index, s.role) for s in steps] == [
         ("11111111", "22222222", 1, "legacy"),

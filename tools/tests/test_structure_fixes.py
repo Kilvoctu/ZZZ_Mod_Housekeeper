@@ -18,7 +18,7 @@ from tools.model import Character, Component
 from tools.structure import StructureData, build_structure
 from tools.ui.worker import structure_for
 
-CHAR_NAME = "朱鸢ZhuYuan"
+CHAR_NAME = "角色甲CharaA"
 
 VB1, VB2, VB3, VB4 = "aa000001", "aa000002", "aa000003", "aa000004"
 VB5 = "aa000005"
@@ -40,7 +40,7 @@ WT2048 = "fade2048"
 
 
 def make_db(variant: str) -> CharacterDB:
-    """The synthetic ZhuYuan table for one resolution variant."""
+    """The synthetic table for one resolution variant."""
     if variant == "2048p":
         hair_textures = [
             [["Diffuse", ".dds", D2048], ["NormalMap", ".dds", NM2048], ["LightMap", ".dds", LM2048]]
@@ -132,12 +132,12 @@ def structural_suggestions(
 def test_insert_run_indexed(tmp_path):
     suggestions = structural_suggestions(
         tmp_path,
-        ["[TextureOverrideZhuYuan.Hair]", f"hash = {IBHAIR}", "match_first_index = 0"],
+        ["[TextureOverrideCharaA.Hair]", f"hash = {IBHAIR}", "match_first_index = 0"],
     )
     assert len(suggestions) == 1
     run = suggestions[0]
     assert run.kind == "insert_run"
-    assert run.section == "TextureOverrideZhuYuan.Hair"
+    assert run.section == "TextureOverrideCharaA.Hair"
     assert run.line_no == 3
     assert run.after_line == 3
     assert run.insert_text == "run = CommandListSkinTexture"
@@ -147,7 +147,7 @@ def test_insert_run_indexed(tmp_path):
 
 def test_insert_run_unindexed_fallback(tmp_path):
     suggestions = structural_suggestions(
-        tmp_path, ["[TextureOverrideZhuYuan.Hair]", f"hash = {IBHAIR}"]
+        tmp_path, ["[TextureOverrideCharaA.Hair]", f"hash = {IBHAIR}"]
     )
     assert len(suggestions) == 1
     run = suggestions[0]
@@ -159,7 +159,7 @@ def test_insert_run_unindexed_fallback(tmp_path):
 def test_insert_run_suppressed(tmp_path):
     suggestions = structural_suggestions(
         tmp_path,
-        ["[TextureOverrideZhuYuan.Hair]", f"hash = {IBHAIR}", "run = CommandListSkinTexture"],
+        ["[TextureOverrideCharaA.Hair]", f"hash = {IBHAIR}", "run = CommandListSkinTexture"],
     )
     assert suggestions == []
 
@@ -168,7 +168,7 @@ def test_insert_run_suppressed_by_custom_command_list(tmp_path):
     indexed = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Hair]",
+            "[TextureOverrideCharaA.Hair]",
             f"hash = {IBHAIR}",
             "match_first_index = 0",
             "run = CommandList\\ZZMI\\SetTextures",
@@ -178,7 +178,7 @@ def test_insert_run_suppressed_by_custom_command_list(tmp_path):
     unindexed = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Hair]",
+            "[TextureOverrideCharaA.Hair]",
             f"hash = {IBHAIR}",
             "run = CommandListBodyADiffuse",
         ],
@@ -191,11 +191,11 @@ def test_insert_run_indexed_covers_unindexed_fallback(tmp_path):
     suggestions = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Hair]",
+            "[TextureOverrideCharaA.Hair]",
             f"hash = {IBHAIR}",
             "match_first_index = 0",
             "run = CommandListSkinTexture",
-            "[TextureOverrideZhuYuan.Extras]",
+            "[TextureOverrideCharaA.Extras]",
             f"hash = {IBHAIR}",
         ],
     )
@@ -205,25 +205,25 @@ def test_insert_run_indexed_covers_unindexed_fallback(tmp_path):
 
 def test_anchor_add_section(tmp_path):
     suggestions = structural_suggestions(
-        tmp_path, ["[TextureOverrideZhuYuan.Hair]", f"hash = {VB1}"]
+        tmp_path, ["[TextureOverrideCharaA.Hair]", f"hash = {VB1}"]
     )
     assert len(suggestions) == 1
     anchor = suggestions[0]
     assert anchor.kind == "add_section"
-    assert anchor.section == "TextureOverrideZhuYuan.Hair"
+    assert anchor.section == "TextureOverrideCharaA.Hair"
     assert anchor.after_line == 2
     assert anchor.old == VB1
     assert anchor.new == IBHAIR
     assert anchor.insert_text == (
-        f"\n[TextureOverrideZhuYuan.Hair.IB]\nhash = {IBHAIR}\nmatch_priority = 0"
+        f"\n[TextureOverrideCharaA.Hair.IB]\nhash = {IBHAIR}\nmatch_priority = 0"
     )
 
     suppressed = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Hair]",
+            "[TextureOverrideCharaA.Hair]",
             f"hash = {VB1}",
-            "[TextureOverrideZhuYuan.Hair.IB]",
+            "[TextureOverrideCharaA.Hair.IB]",
             f"hash = {IBHAIR}",
         ],
         name="Suppressed.ini",
@@ -233,20 +233,20 @@ def test_anchor_add_section(tmp_path):
 
 def test_anchor_gate_chain_alias(tmp_path):
     control = structural_suggestions(
-        tmp_path, ["[TextureOverrideZhuYuan.Body]", f"hash = {VB5}"], name="Control.ini"
+        tmp_path, ["[TextureOverrideCharaA.Body]", f"hash = {VB5}"], name="Control.ini"
     )
     anchors = [s for s in control if s.kind == "add_section" and s.new == IBBODY]
     assert len(anchors) == 1
     assert anchors[0].insert_text == (
-        f"\n[TextureOverrideZhuYuan.Body.IB]\nhash = {IBBODY}\nmatch_priority = 0"
+        f"\n[TextureOverrideCharaA.Body.IB]\nhash = {IBBODY}\nmatch_priority = 0"
     )
 
     gated = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Body]",
+            "[TextureOverrideCharaA.Body]",
             f"hash = {VB5}",
-            "[TextureOverrideZhuYuan.Misc]",
+            "[TextureOverrideCharaA.Misc]",
             f"hash = {LEGACY}",
         ],
         name="Gated.ini",
@@ -258,7 +258,7 @@ def test_multiply_section(tmp_path):
     suggestions = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Hair]",
+            "[TextureOverrideCharaA.Hair]",
             f"hash = {D2048}",
             "match_priority = 5",
             "ps-t0 = resource=x.0.dds",
@@ -267,24 +267,24 @@ def test_multiply_section(tmp_path):
     multiples = [s for s in suggestions if s.kind == "multiply_section"]
     assert len(multiples) == 1
     multiply = multiples[0]
-    assert multiply.section == "TextureOverrideZhuYuan.Hair"
+    assert multiply.section == "TextureOverrideCharaA.Hair"
     assert multiply.line_no == 4
     assert multiply.after_line == 4
     assert multiply.old == D2048
     assert multiply.new == D1024
     assert multiply.insert_text == (
-        f"\n[TextureOverrideZhuYuan.HairA.Diffuse.1024]\nhash = {D1024}"
+        f"\n[TextureOverrideCharaA.HairA.Diffuse.1024]\nhash = {D1024}"
         "\nmatch_priority = 5\nps-t0 = resource=x.0.dds"
     )
 
     suppressed = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Hair]",
+            "[TextureOverrideCharaA.Hair]",
             f"hash = {D2048}",
             "match_priority = 5",
             "ps-t0 = resource=x.0.dds",
-            "[TextureOverrideZhuYuan.Hair.1024]",
+            "[TextureOverrideCharaA.Hair.1024]",
             f"hash = {D1024}",
         ],
         name="Suppressed.ini",
@@ -294,14 +294,14 @@ def test_multiply_section(tmp_path):
 
 def test_multiply_titles_use_slot_letters():
     expected = {
-        D2048: "ZhuYuan.HairA.Diffuse.1024",
-        BD2048: "ZhuYuan.BodyA.Diffuse.1024",
-        EXA2048: "ZhuYuan.ExtrasA.Diffuse.1024",
-        EXB2048: "ZhuYuan.ExtrasB.Diffuse.1024",
+        D2048: "CharaA.HairA.Diffuse.1024",
+        BD2048: "CharaA.BodyA.Diffuse.1024",
+        EXA2048: "CharaA.ExtrasA.Diffuse.1024",
+        EXB2048: "CharaA.ExtrasB.Diffuse.1024",
     }
     for hash_value, title in expected.items():
         multiples = [
-            m for m in STRUCTURE.rules_by_hash[hash_value].multiples if m.char == "ZhuYuan"
+            m for m in STRUCTURE.rules_by_hash[hash_value].multiples if m.char == "CharaA"
         ]
         assert len(multiples) == 1
         assert multiples[0].section_title == title
@@ -312,26 +312,26 @@ def test_shared_normalmap_gate(tmp_path):
     assert len(rules.shared_normalmap) == 1
     shared = rules.shared_normalmap[0]
     assert shared.ibs == tuple(sorted((IBHAIR, IBBODY)))
-    assert shared.section_title == "ZhuYuan.Shared.NormalMap.2048"
+    assert shared.section_title == "CharaA.Shared.NormalMap.2048"
 
     suggestions = structural_suggestions(
-        tmp_path, ["[TextureOverrideZhuYuan.Hair]", f"hash = {NM2048}"]
+        tmp_path, ["[TextureOverrideCharaA.Hair]", f"hash = {NM2048}"]
     )
     anchors = [s for s in suggestions if s.kind == "add_section" and s.new == shared.ibs[0]]
     assert len(anchors) == 1
     anchor = anchors[0]
     assert anchor.after_line == 2
     assert anchor.insert_text == (
-        f"\n[TextureOverrideZhuYuan.Shared.NormalMap.2048]\nhash = {shared.ibs[0]}"
+        f"\n[TextureOverrideCharaA.Shared.NormalMap.2048]\nhash = {shared.ibs[0]}"
         "\nmatch_priority = 0"
     )
 
     suppressed = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuan.Hair]",
+            "[TextureOverrideCharaA.Hair]",
             f"hash = {NM2048}",
-            "[TextureOverrideZhuYuan.Body.IB]",
+            "[TextureOverrideCharaA.Body.IB]",
             f"hash = {IBBODY}",
         ],
         name="Suppressed.ini",
@@ -345,7 +345,7 @@ def test_char_fallback_by_containment(tmp_path):
     def two_char_db(variant: str) -> CharacterDB:
         db = make_db(variant)
         base = db.characters[CHAR_NAME]
-        db.characters["Yuan"] = Character(name="Yuan", components=base.components)
+        db.characters["Chara"] = Character(name="角色Chara", components=base.components)
         return db
 
     structure = build_structure(
@@ -355,16 +355,16 @@ def test_char_fallback_by_containment(tmp_path):
     shared = next(
         rule
         for rule in structure.rules_by_hash[NM2048].shared_normalmap
-        if rule.char == "ZhuYuan"
+        if rule.char == "CharaA"
     )
     assert shared.ibs == tuple(sorted((IBHAIR, IBBODY)))
 
     suggestions = structural_suggestions(
         tmp_path,
         [
-            "[TextureOverrideZhuYuanHairANormalMap]",
+            "[TextureOverrideCharaAHairANormalMap]",
             f"hash = {NM2048}",
-            "this = ResourceZhuYuanHairANormalMap",
+            "this = ResourceCharaAHairANormalMap",
         ],
         name="NormalMap.ini",
         structure=structure,
@@ -372,16 +372,16 @@ def test_char_fallback_by_containment(tmp_path):
     add_sections = [s for s in suggestions if s.kind == "add_section"]
     assert len(add_sections) == 1
     anchor = add_sections[0]
-    assert anchor.section == "TextureOverrideZhuYuanHairANormalMap"
+    assert anchor.section == "TextureOverrideCharaAHairANormalMap"
     assert anchor.new == shared.ibs[0] == IBHAIR
     assert anchor.insert_text == (
-        f"\n[TextureOverrideZhuYuan.Shared.NormalMap.2048]\nhash = {IBHAIR}"
+        f"\n[TextureOverrideCharaA.Shared.NormalMap.2048]\nhash = {IBHAIR}"
         "\nmatch_priority = 0"
     )
 
     companion = structural_suggestions(
         tmp_path,
-        ["[TextureOverrideZhuYuanHair]", f"hash = {IBHAIR}"],
+        ["[TextureOverrideCharaAHair]", f"hash = {IBHAIR}"],
         name="Hair.ini",
         structure=structure,
     )
@@ -402,17 +402,17 @@ def test_weapon_only_texture(tmp_path):
     anchor_rule = rules.anchors[0]
     assert anchor_rule.kind == "weapon"
     assert anchor_rule.ib == IBW0
-    assert anchor_rule.section_title == "ZhuYuan.weapon.IB"
+    assert anchor_rule.section_title == "CharaA.weapon.IB"
     assert rules.multiples == []
 
     suggestions = structural_suggestions(
-        tmp_path, ["[TextureOverrideZhuYuan.weapon]", f"hash = {WT2048}"]
+        tmp_path, ["[TextureOverrideCharaA.weapon]", f"hash = {WT2048}"]
     )
     assert len(suggestions) == 1
     anchor = suggestions[0]
     assert anchor.kind == "add_section"
     assert anchor.insert_text == (
-        f"\n[TextureOverrideZhuYuan.weapon.IB]\nhash = {IBW0}\nmatch_priority = 0"
+        f"\n[TextureOverrideCharaA.weapon.IB]\nhash = {IBW0}\nmatch_priority = 0"
     )
 
 
@@ -420,7 +420,7 @@ def test_apply_plan_end_to_end(tmp_path):
     store = tmp_path / "store"
     mods = tmp_path / "mods"
     mods.mkdir()
-    lines = ["[TextureOverrideZhuYuan.Hair]", f"hash = {VB1}"]
+    lines = ["[TextureOverrideCharaA.Hair]", f"hash = {VB1}"]
     path = write_ini(mods, lines)
     original = ini_bytes(lines)
     data = make_data()
@@ -443,7 +443,7 @@ def test_apply_plan_end_to_end(tmp_path):
     assert apply() is True
 
     fixed = path.read_bytes()
-    assert b"\r\n[TextureOverrideZhuYuan.Hair.IB]\r\nhash = " + IBHAIR.encode() + b"\r\nmatch_priority = 0\r\n" in fixed
+    assert b"\r\n[TextureOverrideCharaA.Hair.IB]\r\nhash = " + IBHAIR.encode() + b"\r\nmatch_priority = 0\r\n" in fixed
     assert fixed.count(b"\r\n") == fixed.count(b"\n")
     assert b"\r\n[TextureOverride" in fixed
     assert fixed.startswith(original)
@@ -460,7 +460,7 @@ def test_fixpoint_passes_back_up_once(tmp_path):
     store = tmp_path / "store"
     mods = tmp_path / "mods"
     mods.mkdir()
-    lines = ["[TextureOverrideZhuYuan.Hair]", f"hash = {VB1}"]
+    lines = ["[TextureOverrideCharaA.Hair]", f"hash = {VB1}"]
     path = write_ini(mods, lines)
     original = ini_bytes(lines)
     data = make_data()
@@ -490,7 +490,7 @@ def test_fixpoint_passes_back_up_once(tmp_path):
 
 
 def test_scan_without_structure_has_no_structural_kinds(tmp_path):
-    path = write_ini(tmp_path, ["[TextureOverrideZhuYuan.Hair]", f"hash = {VB1}"])
+    path = write_ini(tmp_path, ["[TextureOverrideCharaA.Hair]", f"hash = {VB1}"])
     plans = scan_files([path], make_data())
     for plan in plans:
         for suggestion in plan.suggestions:
