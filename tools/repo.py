@@ -1,13 +1,17 @@
-"""Clone/update the ZZZ-Model-Hash data repo into a local cache directory."""
+"""Fetch/refresh the ZZZ-Model-Hash data into a local cache directory."""
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache
 from pathlib import Path
+import io
+import json
 import os
 import shutil
-import subprocess
 import sys
+import tempfile
+import zipfile
+from urllib.error import URLError
+from urllib.request import Request, urlopen
 
 REPO_URL = "https://github.com/hefengchang/ZZZ-Model-Hash.git"
 CHANGELOG_NAME = "Hash变动日志.txt"
@@ -16,13 +20,12 @@ LOWVARM_REPO_URL = "https://github.com/hefengchang/ZZZ-Model-Hash_LowVarm.git"
 LOWVARM_CHARACTERS_DIR_NAME = "角色hash表低显"
 
 _TIMEOUT_SECONDS = 300
-_SNIPPET_CHARS = 300
-
-_NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+_MARKER_NAME = ".zzzhashfix.json"
+_USER_AGENT = "ZZZHashFix/1.0"
 
 
 class RepoError(RuntimeError):
-    """Raised when the data repo cannot be cloned or updated."""
+    """Raised when the data repos cannot be downloaded or unpacked."""
 
 
 @dataclass(frozen=True)
@@ -32,11 +35,13 @@ class RepoVariant:
     key: str
     repo_url: str
     dir_name: str
+    repo_name: str
+    branch: str
 
 
 REPO_VARIANTS: dict[str, RepoVariant] = {
-    "2048p": RepoVariant("2048p", REPO_URL, "zzz-model-hash"),
-    "1024p": RepoVariant("1024p", LOWVARM_REPO_URL, "zzz-model-hash_lowvarm"),
+    "2048p": RepoVariant("2048p", REPO_URL, "zzz-model-hash", "ZZZ-Model-Hash", "master"),
+    "1024p": RepoVariant("1024p", LOWVARM_REPO_URL, "zzz-model-hash_lowvarm", "ZZZ-Model-Hash_LowVarm", "main"),
 }
 DEFAULT_VARIANT = "2048p"
 
@@ -89,121 +94,174 @@ def ensure_repo(
     cache_dir: Path | None = None,
     log: Callable[[str], None] = print,
 ) -> Path:
-    """Ensure a local clone of the variant's data repo exists and is up to date.
+    """Ensure a local copy of the variant's data repo exists and is up to date.
 
-    Missing or incomplete cache dirs get a fresh shallow clone; an unupdatable
-    existing clone is kept as-is, and only a failed clone raises RepoError.
+    Existing copies are refreshed from the upstream archive (an ETag check skips
+    redundant downloads); an unrefreshable copy is kept as-is, and only a failed
+    first download raises RepoError.
     """
     target = Path(cache_dir) if cache_dir is not None else default_cache_dir(variant)
-    if target.is_dir() and (target / ".git").exists():
+    if target.is_dir() and (target / _MARKER_NAME).is_file():
         try:
-            _run_git(["-C", str(target), "pull", "--ff-only"])
-            log(f"ZZZ-Model-Hash data updated: {target}")
+            remote = _head_etag(_archive_url(variant))
+            if remote and remote == _read_marker(target).get("etag"):
+                return target
+            _download_archive(variant, target)
         except RepoError as exc:
             log(f"Could not update ZZZ-Model-Hash data, keeping existing copy: {exc}")
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
-    log(f"Cloning ZZZ-Model-Hash data repo into {target} ...")
-    _run_git(["clone", "--depth", "1", REPO_VARIANTS[variant].repo_url, str(target)])
-    log(f"Cloned ZZZ-Model-Hash data into {target}")
+    log(f"Downloading ZZZ-Model-Hash data into {target} ...")
+    try:
+        _download_archive(variant, target)
+    except RepoError:
+        _remove_tree(target)
+        raise
+    log(f"Downloaded ZZZ-Model-Hash data into {target}")
     return target
 
 
 def repo_head(cache_dir: Path) -> str:
-    """Return the short HEAD SHA of the cloned repo, or "" on any failure."""
-    return _run_git(
-        ["-C", str(cache_dir), "rev-parse", "--short", "HEAD"], check=False
-    ).strip()
+    """Return the commit SHA the cache was fetched at, or \"\" when never fetched."""
+    return _read_marker(cache_dir).get("sha", "")
 
 
 def repo_update_available(
     variant: str = DEFAULT_VARIANT,
     cache_dir: Path | None = None,
 ) -> bool | None:
-    """Whether the upstream repo has commits the local clone lacks.
+    """Whether the upstream repo has commits the local copy lacks.
 
-    True when the upstream HEAD differs from the local HEAD (including
-    nothing cloned yet), False when both agree, None when the check could not run.
+    True when the upstream ETag differs from the cached one (including nothing
+    fetched yet), False when both agree, None when the check could not run.
     """
     target = Path(cache_dir) if cache_dir is not None else default_cache_dir(variant)
-    if not (target.is_dir() and (target / ".git").exists()):
+    if not (target.is_dir() and (target / _MARKER_NAME).is_file()):
         return True
     try:
-        advertisement = _run_git(["-C", str(target), "ls-remote", "origin", "HEAD"])
+        remote = _head_etag(_archive_url(variant))
     except RepoError:
         return None
-    remote_sha = (
-        advertisement.split("\t", 1)[0].strip().lower()
-        if advertisement.strip()
-        else ""
-    )
-    if not remote_sha:
+    if not remote:
         return None
-    local = _run_git(
-        ["-C", str(target), "rev-parse", "HEAD"], check=False
-    ).strip().lower()
+    local = _read_marker(target).get("etag")
     if not local:
-        return None
-    return remote_sha != local
+        return True
+    return remote != local
 
 
-@lru_cache(maxsize=1)
-def _git_exe() -> str | None:
-    """The resolved git executable path, or None when git is not installed."""
-    return shutil.which("git")
+def _archive_url(variant: str) -> str:
+    """codeload zip archive URL for the variant's default branch."""
+    info = REPO_VARIANTS[variant]
+    return (
+        f"https://codeload.github.com/hefengchang/{info.repo_name}/"
+        f"zip/refs/heads/{info.branch}"
+    )
 
 
-def _run_git(args: list[str], check: bool = True) -> str:
-    """Run a git command and return its stdout; raise RepoError on failure."""
-    git = _git_exe()
-    if git is None:
-        if not check:
-            return ""
-        raise RepoError("git executable not found")
+def _download_archive(variant: str, target: Path) -> None:
+    """Download and unpack the variant's tip archive into ``target``."""
+    staging = Path(
+        tempfile.mkdtemp(prefix=f"{target.name}-staging-", dir=str(target.parent))
+    )
     try:
-        result = subprocess.run(
-            [git, *args],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=_TIMEOUT_SECONDS,
-            creationflags=_NO_WINDOW,
-        )
-    except subprocess.TimeoutExpired as exc:
-        if not check:
-            return ""
-        raise RepoError(
-            f"git {args[-1]} timed out after {_TIMEOUT_SECONDS}s"
-            f"{_output_snippet(exc.stdout, exc.stderr)}"
-        ) from exc
-    except OSError as exc:
-        if not check:
-            return ""
-        raise RepoError(f"failed to run git: {exc}") from exc
-    if result.returncode != 0:
-        if not check:
-            return ""
-        raise RepoError(
-            f"git {' '.join(args)} failed with exit code {result.returncode}"
-            f"{_output_snippet(result.stdout, result.stderr)}"
-        )
-    return result.stdout
+        body, etag = _fetch_url(_archive_url(variant))
+        _extract_archive(body, staging)
+        _replace_dir(target, staging)
+        _write_marker(target, etag=etag, sha=_head_sha(variant))
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
 
 
-def _output_snippet(*outputs: str | bytes | None) -> str:
-    """Format a short diagnostic snippet from subprocess output (str or bytes)."""
+def _fetch_url(url: str, timeout: int = _TIMEOUT_SECONDS) -> tuple[bytes, str | None]:
+    """GET url and return (body, ETag header); raise RepoError on any failure."""
+    request = Request(url, headers={"User-Agent": _USER_AGENT})
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            body = response.read()
+            return body, response.headers.get("ETag")
+    except (URLError, OSError) as exc:
+        raise RepoError(f"network request failed: {exc}") from None
 
-    def decode(value: str | bytes | None) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            return value.decode("utf-8", errors="replace")
-        return str(value)
 
-    text = "\n".join(decode(part) for part in outputs).strip()
-    if not text:
+def _head_etag(url: str, timeout: int = _TIMEOUT_SECONDS) -> str | None:
+    """Return the ETag header for url, or None; raise RepoError on failure."""
+    request = Request(url, headers={"User-Agent": _USER_AGENT}, method="HEAD")
+    try:
+        with urlopen(request, timeout=timeout) as response:
+            return response.headers.get("ETag")
+    except (URLError, OSError) as exc:
+        raise RepoError(f"network request failed: {exc}") from None
+
+
+def _head_sha(variant: str) -> str:
+    """The upstream default-branch commit SHA, or \"\" on any failure."""
+    info = REPO_VARIANTS[variant]
+    url = (
+        f"https://api.github.com/repos/hefengchang/{info.repo_name}/"
+        f"commits/{info.branch}"
+    )
+    try:
+        body, _etag = _fetch_url(url, timeout=_TIMEOUT_SECONDS)
+        sha = json.loads(body.decode("utf-8")).get("sha")
+        return str(sha) if sha else ""
+    except (RepoError, ValueError):
         return ""
-    if len(text) > _SNIPPET_CHARS:
-        text = text[:_SNIPPET_CHARS] + "..."
-    return f": {text}"
+
+
+def _extract_archive(archive: bytes, destination: Path) -> None:
+    """Unpack a GitHub zip archive, dropping its single top-level folder."""
+    with zipfile.ZipFile(io.BytesIO(archive)) as zf:
+        members = zf.namelist()
+        if not members:
+            raise RepoError("downloaded archive is empty")
+        top = members[0].split("/", 1)[0]
+        prefix = top + "/"
+        destination.mkdir(parents=True, exist_ok=True)
+        for member in members:
+            if not member.startswith(prefix):
+                continue
+            rel = member[len(prefix):]
+            if not rel:
+                continue
+            rel_parts = rel.split("/")
+            if ".." in rel_parts:
+                raise RepoError("archive member escapes the target directory")
+            if member.endswith("/"):
+                destination.joinpath(*rel_parts).mkdir(parents=True, exist_ok=True)
+                continue
+            dest = destination.joinpath(*rel_parts)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(zf.read(member))
+
+
+def _replace_dir(target: Path, staging: Path) -> None:
+    """Swap staging into place, replacing any existing target."""
+    if target.exists():
+        shutil.rmtree(target)
+    os.replace(staging, target)
+
+
+def _remove_tree(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _read_marker(cache_dir: Path) -> dict[str, str]:
+    try:
+        raw = json.loads((cache_dir / _MARKER_NAME).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return {key: str(value) for key, value in raw.items() if value is not None}
+
+
+def _write_marker(
+    cache_dir: Path, etag: str | None = None, sha: str = ""
+) -> None:
+    marker: dict[str, str] = {"etag": etag} if etag else {}
+    if sha:
+        marker["sha"] = sha
+    (cache_dir / _MARKER_NAME).write_text(
+        json.dumps(marker, indent=2), encoding="utf-8"
+    )

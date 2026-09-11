@@ -8,6 +8,7 @@ from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from functools import partial
 from pathlib import Path
+from typing import cast
 
 from PySide6.QtCore import QPoint, QSettings, Qt, QTimer, QUrl
 from PySide6.QtGui import QCloseEvent, QColor, QDesktopServices, QFontDatabase
@@ -282,7 +283,9 @@ class _RevertDialog(QDialog):
         """Point every combo at its first non-leave option (index 1)."""
         for row in range(self._table.rowCount()):
             combo = self._table.cellWidget(row, 1)
-            if combo is not None and combo.count() > 1:
+            if not isinstance(combo, QComboBox):
+                continue
+            if combo.count() > 1:
                 combo.setCurrentIndex(1)
 
     def selected_choices(self) -> list[tuple[Path, Path]]:
@@ -290,7 +293,7 @@ class _RevertDialog(QDialog):
         choices: list[tuple[Path, Path]] = []
         for row in range(self._table.rowCount()):
             combo = self._table.cellWidget(row, 1)
-            if combo is None:
+            if not isinstance(combo, QComboBox):
                 continue
             backup = combo.currentData()
             if isinstance(backup, Path):
@@ -329,13 +332,17 @@ class MainWindow(QMainWindow):
                 f"Upstream: {REPO_VARIANTS[variant].repo_url}\n"
                 f"Data repo: {default_cache_dir(variant)}"
             )
-        self._settings = QSettings(str(project_root() / "settings.ini"), QSettings.IniFormat)
+        self._settings = QSettings(
+            str(project_root() / "settings.ini"), QSettings.Format.IniFormat
+        )
         geometry = self._settings.value("window_geometry")
         if geometry is not None:
             self.restoreGeometry(geometry)
         for column, default in _TREE_COLUMN_WIDTHS:
             try:
-                width = int(self._settings.value(f"col_width_{column}", default))
+                width = int(
+                    cast(int, self._settings.value(f"col_width_{column}", default))
+                )
             except (TypeError, ValueError):
                 width = default
             if width > 0:
@@ -436,6 +443,7 @@ class MainWindow(QMainWindow):
             self._append_log(
                 f"No local hash data yet — click '{_UPDATE_BUTTON}' to download it first."
             )
+            QTimer.singleShot(0, self._check_hash_updates)
             return
         self._append_log("Loading hash data from local clones...")
         self._start_worker(load_all_data_worker(), self._on_data_loaded)
@@ -472,10 +480,13 @@ class MainWindow(QMainWindow):
         worker.start()
 
     def _on_update_check_done(self, statuses: object) -> None:
-        self._update_statuses = dict(statuses)
-        for variant in sorted(self._update_statuses):
-            status = self._update_statuses[variant]
-            if status is True:
+        if not isinstance(statuses, dict):
+            return
+        resolved: dict[str, bool | None] = dict(statuses)
+        self._update_statuses = resolved
+        for variant in sorted(resolved):
+            status = resolved[variant]
+            if status:
                 outcome = "update available"
             elif status is False:
                 outcome = "up to date"
@@ -483,7 +494,7 @@ class MainWindow(QMainWindow):
                 outcome = "could not check (offline?)"
             self._append_log(f"Hash data check ({variant}): {outcome}")
         self._refresh_actions()
-        if any(status is None for status in self._update_statuses.values()):
+        if any(status is None for status in resolved.values()):
             self._check_retry_timer.start(60_000)
 
     def _on_check_finished(self) -> None:
@@ -491,13 +502,16 @@ class MainWindow(QMainWindow):
         self._refresh_actions()
 
     def _on_data_loaded(self, result: object) -> None:
+        if not isinstance(result, tuple) or len(result) != 4:
+            return
         repo_dirs, datasets, heads, structure = result
+        loaded = cast(dict[str, FixerData], datasets)
         self._repo_dirs = repo_dirs
-        self._data = datasets
+        self._data = loaded
         self._structure = structure
-        variants = sorted(datasets)
+        variants = sorted(loaded)
         for variant in variants:
-            data = datasets[variant]
+            data = loaded[variant]
             self._append_log(
                 f"Data loaded ({variant}): {len(data.db.characters)} characters, "
                 f"{len(data.chains)} chain sources"
@@ -531,6 +545,8 @@ class MainWindow(QMainWindow):
         )
 
     def _on_analyze_done(self, result: object) -> None:
+        if not isinstance(result, tuple) or len(result) != 2:
+            return
         node, summary = result
         self._fill_mod_tree(node)
         self._append_log(_analysis_log_line(summary))
@@ -570,6 +586,8 @@ class MainWindow(QMainWindow):
         self._start_worker(worker, self._on_fix_done)
 
     def _on_fix_done(self, result: object) -> None:
+        if not isinstance(result, tuple) or len(result) != 3:
+            return
         variant, plans, written = result
         total = sum(
             1
@@ -604,6 +622,8 @@ class MainWindow(QMainWindow):
         )
 
     def _on_chains_done(self, chains: object) -> None:
+        if not isinstance(chains, dict):
+            return
         chain_list = list(chains.values())
         if not chain_list:
             self._append_log(f"Nothing to revert in '{self._fixing_name}'")
@@ -619,6 +639,8 @@ class MainWindow(QMainWindow):
         self._start_worker(revert_worker(choices), self._on_revert_done)
 
     def _on_revert_done(self, count: object) -> None:
+        if not isinstance(count, int):
+            return
         self._append_log(f"Restored {count} file(s) in '{self._fixing_name}'")
         QTimer.singleShot(0, self._deferred_scope_refresh)
 
@@ -631,7 +653,8 @@ class MainWindow(QMainWindow):
         self._loaded_via_update = False
         self._set_busy(False)
 
-    def _scope_for(self, node: ModNode) -> Path | list[Path]:
+    @staticmethod
+    def _scope_for(node: ModNode) -> Path | list[Path]:
         """Directory path for dir-ish nodes; [file path] for single file nodes."""
         return [node.path] if node.kind == "file" else node.path
 
@@ -708,7 +731,7 @@ class MainWindow(QMainWindow):
         return count
 
     def _start_analyze(self) -> None:
-        """Auto-analyse the current mods folder into the mods overview."""
+        """Auto-analyze the current mods folder into the mods overview."""
         if self._worker is not None or not self._data:
             return
         mods_dir = self._mods_edit.text().strip()

@@ -1,8 +1,8 @@
-"""Tests for tools.repo: variant table, cache dirs and character-dir detection."""
+"""Tests for tools.repo: variant table, cache dirs, HTTP archive fetching."""
 
-import shutil
-import subprocess
+import io
 import sys
+import zipfile
 from pathlib import Path
 
 import pytest
@@ -28,15 +28,19 @@ def test_repo_variant_table():
     assert repo.DEFAULT_VARIANT == "2048p"
     high = repo.REPO_VARIANTS["2048p"]
     low = repo.REPO_VARIANTS["1024p"]
-    assert (high.key, high.repo_url, high.dir_name) == (
+    assert (high.key, high.repo_url, high.dir_name, high.repo_name, high.branch) == (
         "2048p",
         repo.REPO_URL,
         "zzz-model-hash",
+        "ZZZ-Model-Hash",
+        "master",
     )
-    assert (low.key, low.repo_url, low.dir_name) == (
+    assert (low.key, low.repo_url, low.dir_name, low.repo_name, low.branch) == (
         "1024p",
         repo.LOWVARM_REPO_URL,
         "zzz-model-hash_lowvarm",
+        "ZZZ-Model-Hash_LowVarm",
+        "main",
     )
     assert repo.LOWVARM_REPO_URL.endswith("ZZZ-Model-Hash_LowVarm.git")
 
@@ -68,125 +72,192 @@ def test_characters_dir_autodetect(tmp_path):
         repo.characters_dir(empty)
 
 
-def test_ensure_repo_variant_url_selection(tmp_path, monkeypatch):
-    calls: list[list[str]] = []
+def _archive_bytes(top: str, files: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for name, content in files.items():
+            zf.writestr(f"{top}/{name}", content)
+    return buffer.getvalue()
 
-    def fake_run_git(args, check=True):
-        assert check
-        calls.append(args)
-        return ""
 
-    monkeypatch.setattr(repo, "_run_git", fake_run_git)
+def test_ensure_repo_fresh_download_populates_variant_cache(tmp_path, monkeypatch):
+    calls: list[tuple[str, str | None]] = []
 
-    assert repo.ensure_repo("1024p", cache_dir=tmp_path) == tmp_path
-    assert calls == [
-        ["clone", "--depth", "1", repo.LOWVARM_REPO_URL, str(tmp_path)]
-    ]
+    def fake_fetch(url, timeout=repo._TIMEOUT_SECONDS):
+        assert timeout == repo._TIMEOUT_SECONDS
+        calls.append((str(url), None))
+        return _archive_bytes(
+            "ZZZ-Model-Hash-master",
+            {repo.CHANGELOG_NAME: b"logs", "角色hash表/a.json": b"{}"},
+        ), '"etag-v1"'
 
-    calls.clear()
+    monkeypatch.setattr(repo, "_fetch_url", fake_fetch)
+    monkeypatch.setattr(repo, "_head_sha", lambda variant: "abc123def")
+
     high = tmp_path / "high"
     assert repo.ensure_repo("2048p", cache_dir=high) == high
-    assert calls == [["clone", "--depth", "1", repo.REPO_URL, str(high)]]
+    assert (high / repo.CHANGELOG_NAME).read_bytes() == b"logs"
+    assert (high / "角色hash表" / "a.json").read_bytes() == b"{}"
+    assert repo.repo_head(high) == "abc123def"
+    assert repo._read_marker(high).get("etag") == '"etag-v1"'
+    assert len(calls) == 1
+    assert "codeload.github.com" in calls[0][0]
+    assert "ZZZ-Model-Hash" in calls[0][0]
+    assert "refs/heads/master" in calls[0][0]
+    assert not list(tmp_path.glob("*-staging-*"))
 
 
-def test_repo_update_available_without_clone(tmp_path, monkeypatch):
-    def fail(args, check=True):
+def test_ensure_repo_up_to_date_skips_download(tmp_path, monkeypatch):
+    target = tmp_path / "cache"
+    target.mkdir()
+    repo._write_marker(target, etag="etag-v1")
+    (target / repo.CHANGELOG_NAME).write_text("x", encoding="utf-8")
+    calls: list[str] = []
+
+    monkeypatch.setattr(repo, "_head_etag", lambda url: "etag-v1")
+
+    def fail_fetch(url, timeout=repo._TIMEOUT_SECONDS):
         raise AssertionError(
-            f"no git call expected without a local clone: {args}, check={check}"
+            f"no download expected when up to date: {url} (timeout={timeout})"
         )
 
-    monkeypatch.setattr(repo, "_run_git", fail)
-    assert repo.repo_update_available("2048p", cache_dir=tmp_path) is True
-    target = tmp_path / "partial"
+    monkeypatch.setattr(repo, "_fetch_url", fail_fetch)
+    assert repo.ensure_repo("2048p", cache_dir=target) == target
+    assert calls == []
+
+
+def test_ensure_repo_refreshes_when_etag_changes(tmp_path, monkeypatch):
+    target = tmp_path / "cache"
     target.mkdir()
-    assert repo.repo_update_available("2048p", cache_dir=target) is True
+    repo._write_marker(target, etag="etag-v1")
+    (target / repo.CHANGELOG_NAME).write_text("old", encoding="utf-8")
+    downloaded: list[tuple[str, str]] = []
+
+    monkeypatch.setattr(repo, "_head_etag", lambda url: "etag-v2")
+
+    def fake_download(variant, target_path):
+        downloaded.append((variant, str(target_path)))
+        (target_path / repo.CHANGELOG_NAME).write_text("new", encoding="utf-8")
+        repo._write_marker(target_path, etag="etag-v2", sha="def456")
+
+    monkeypatch.setattr(repo, "_download_archive", fake_download)
+    assert repo.ensure_repo("1024p", cache_dir=target) == target
+    assert downloaded == [("1024p", str(target))]
+    assert (target / repo.CHANGELOG_NAME).read_text(encoding="utf-8") == "new"
+    assert repo.repo_head(target) == "def456"
 
 
-def test_repo_update_available_pinned_git_calls(tmp_path, monkeypatch):
-    target = tmp_path / "clone"
-    (target / ".git").mkdir(parents=True)
-    calls: list[list[str]] = []
-    canned = {"remote": "", "local": ""}
+def test_ensure_repo_keeps_existing_when_refresh_fails(tmp_path, monkeypatch):
+    target = tmp_path / "cache"
+    target.mkdir()
+    repo._write_marker(target, etag="etag-v1")
+    (target / repo.CHANGELOG_NAME).write_text("x", encoding="utf-8")
+    logs: list[str] = []
 
-    def fake_run_git(args, check=True):
-        calls.append(list(args))
-        if "ls-remote" in args:
-            return canned["remote"]
-        assert not check
-        return canned["local"]
+    def fail_etag(url):
+        raise repo.RepoError(f"offline: {url}")
 
-    monkeypatch.setattr(repo, "_run_git", fake_run_git)
+    monkeypatch.setattr(repo, "_head_etag", fail_etag)
+    assert repo.ensure_repo("2048p", cache_dir=target, log=logs.append) == target
+    assert (target / repo.CHANGELOG_NAME).read_text(encoding="utf-8") == "x"
+    assert any("keeping existing copy" in line for line in logs)
 
-    canned["remote"] = "abc123def\tHEAD\n"
-    canned["local"] = "abc123def\n"
+
+def test_ensure_repo_fresh_download_failure_raises_and_cleans(tmp_path, monkeypatch):
+    target = tmp_path / "cache"
+
+    def fail_fetch(url, timeout=repo._TIMEOUT_SECONDS):
+        raise repo.RepoError(f"offline: {url} (timeout={timeout})")
+
+    monkeypatch.setattr(repo, "_fetch_url", fail_fetch)
+    with pytest.raises(repo.RepoError):
+        repo.ensure_repo("2048p", cache_dir=target)
+    assert not target.exists()
+    assert not list(tmp_path.glob("*-staging-*"))
+
+
+def test_repo_update_available_without_marker(tmp_path, monkeypatch):
+    def fail(url):
+        raise AssertionError(f"no network call expected: {url}")
+
+    monkeypatch.setattr(repo, "_head_etag", fail)
+    assert repo.repo_update_available("2048p", cache_dir=tmp_path) is True
+    partial = tmp_path / "partial"
+    partial.mkdir()
+    assert repo.repo_update_available("2048p", cache_dir=partial) is True
+
+
+def test_repo_update_available_pins_etag_calls(tmp_path, monkeypatch):
+    target = tmp_path / "cache"
+    target.mkdir()
+    repo._write_marker(target, etag="etag-v1")
+    calls: list[str] = []
+
+    def fake_etag(url):
+        calls.append(str(url))
+        return current
+
+    monkeypatch.setattr(repo, "_head_etag", fake_etag)
+    current = "etag-v1"
     assert repo.repo_update_available("1024p", cache_dir=target) is False
-    assert calls == [
-        ["-C", str(target), "ls-remote", "origin", "HEAD"],
-        ["-C", str(target), "rev-parse", "HEAD"],
-    ]
+    assert len(calls) == 1
 
-    calls.clear()
-    canned["remote"] = "def456abc\tHEAD\n"
+    current = "etag-v2"
     assert repo.repo_update_available("1024p", cache_dir=target) is True
 
     calls.clear()
-    canned["remote"] = "ABC123DEF\tHEAD\n"
-    canned["local"] = "abc123def\n"
-    assert repo.repo_update_available("1024p", cache_dir=target) is False
+    assert repo.repo_update_available("1024p", cache_dir=target) is True
+    assert len(calls) == 1
+    assert "ZZZ-Model-Hash_LowVarm" in calls[0]
+    assert "refs/heads/main" in calls[0]
 
 
 def test_repo_update_available_unknown_when_check_fails(tmp_path, monkeypatch):
-    target = tmp_path / "clone"
-    (target / ".git").mkdir(parents=True)
+    target = tmp_path / "cache"
+    target.mkdir()
+    repo._write_marker(target, etag="etag-v1")
 
-    def raise_repo_error(args, check=True):
-        raise repo.RepoError(f"offline: {args} (check={check})")
-
-    monkeypatch.setattr(repo, "_run_git", raise_repo_error)
+    monkeypatch.setattr(repo, "_head_etag", lambda url: _raise(repo.RepoError("offline")))
     assert repo.repo_update_available(cache_dir=target) is None
 
-    monkeypatch.setattr(repo, "_run_git", lambda args, check=True: "")
+    monkeypatch.setattr(repo, "_head_etag", lambda url: None)
     assert repo.repo_update_available(cache_dir=target) is None
 
-    def empty_local(args, check=True):
-        if "ls-remote" in args:
-            assert check
-            return "abc123def\tHEAD\n"
-        assert not check
-        return ""
-
-    monkeypatch.setattr(repo, "_run_git", empty_local)
-    assert repo.repo_update_available(cache_dir=target) is None
+    repo._write_marker(target)
+    monkeypatch.setattr(repo, "_head_etag", lambda url: "etag-v1")
+    assert repo.repo_update_available(cache_dir=target) is True
 
 
-@pytest.mark.skipif(shutil.which("git") is None, reason="git executable not available")
-def test_repo_update_available_real_git(tmp_path):
-    def git(*args: str) -> None:
-        subprocess.run(
-            ["git", *args], cwd=tmp_path, check=True, capture_output=True
-        )
-
-    origin = tmp_path / "origin.git"
-    git("init", "--bare", str(origin))
-    seed = tmp_path / "seed"
-    git("clone", str(origin), str(seed))
-    (seed / "data.txt").write_text("one", encoding="utf-8")
-    git("-C", str(seed), "add", ".")
-    git(
-        "-C", str(seed), "-c", "user.email=t@example", "-c", "user.name=t",
-        "commit", "-m", "one",
+def test_extract_archive_drops_top_folder(tmp_path):
+    archive = _archive_bytes(
+        "ZZZ-Model-Hash-master",
+        {
+            "Hash变动日志.txt": b"logs",
+            "角色hash表/a.json": b"{}",
+            "角色hash表/子目录/b.ini": b"ini",
+        },
     )
-    git("-C", str(seed), "push", "origin", "HEAD")
+    destination = tmp_path / "out"
+    repo._extract_archive(archive, destination)
+    assert (destination / "Hash变动日志.txt").read_bytes() == b"logs"
+    assert (destination / "角色hash表" / "a.json").read_bytes() == b"{}"
+    assert (
+        destination / "角色hash表" / "子目录" / "b.ini"
+    ).read_bytes() == b"ini"
+    assert not (destination / "ZZZ-Model-Hash-master").exists()
 
-    clone = tmp_path / "clone"
-    git("clone", str(origin), str(clone))
-    assert repo.repo_update_available(cache_dir=clone) is False
 
-    (seed / "data.txt").write_text("two", encoding="utf-8")
-    git("-C", str(seed), "add", ".")
-    git(
-        "-C", str(seed), "-c", "user.email=t@example", "-c", "user.name=t",
-        "commit", "-m", "two",
-    )
-    git("-C", str(seed), "push", "origin", "HEAD")
-    assert repo.repo_update_available(cache_dir=clone) is True
+def test_extract_archive_rejects_escaping_members(tmp_path):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        zf.writestr("ZZZ-Model-Hash-master/../../evil.txt", b"boom")
+    with pytest.raises(repo.RepoError, match="escapes"):
+        repo._extract_archive(buffer.getvalue(), tmp_path / "out")
+
+
+def test_repo_head_defaults_to_empty(tmp_path):
+    assert repo.repo_head(tmp_path) == ""
+
+
+def _raise(exc):
+    raise exc

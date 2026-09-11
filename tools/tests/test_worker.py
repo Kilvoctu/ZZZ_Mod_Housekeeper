@@ -4,6 +4,8 @@
 ``repo_dirs, datasets, heads, structure``; these tests pin that shape.
 """
 
+from collections.abc import Callable
+
 import hashlib
 import json
 import struct
@@ -21,7 +23,12 @@ from tools.ui.main_window import (
     updates_tooltip,
     wrap_tooltip,
 )
-from tools.ui.worker import fix_mod_worker, friendly_error, load_all_data_worker
+from tools.ui.worker import (
+    fix_mod_worker,
+    friendly_error,
+    load_all_data_worker,
+    update_data_worker,
+)
 
 
 def test_load_all_data_worker_delivers_variant_caches_and_datasets(tmp_path, monkeypatch):
@@ -241,3 +248,26 @@ def test_tooltip_text_wraps_at_width():
         assert all(
             len(line) <= 70 for line in updates_tooltip(signal).split("\n")
         )
+
+
+def test_update_data_worker_calls_ensure_repo(tmp_path, monkeypatch):
+    called: list[str] = []
+
+    def fake_ensure(variant, cache_dir=None, log: Callable[[str], None] = print):
+        assert cache_dir is None
+        called.append(variant)
+        log(f"ensured {variant}")
+        return tmp_path
+
+    monkeypatch.setattr("tools.ui.worker.ensure_repo", fake_ensure)
+    errors: list[str] = []
+    logs: list[str] = []
+    worker = update_data_worker()
+    worker.log.connect(logs.append)
+    worker.error.connect(errors.append)
+    worker.run()
+
+    assert called == ["2048p", "1024p"]
+    assert logs[:2] == ["ensured 2048p", "ensured 1024p"]
+    assert len(errors) == 1
+    assert "no local hash data" in errors[0]
