@@ -1,7 +1,9 @@
 """Classify mod folders and analyze each mod's game-version status.
 
 A mod root is the highest directory directly holding an included .ini or a
-``mod.json``; backups are excluded and hashes are classified as the fixer resolves them.
+``mod.json``; backups are excluded and hashes are classified as the fixer
+resolves them. A mod root may be promoted to a wrapper parent that holds
+only loose files (e.g. a readme) and that single nested mod root.
 """
 
 import os
@@ -27,7 +29,7 @@ from .structure import StructureData
 _DISABLED_PREFIX = "DISABLED_"
 _CONTAINER_DIRS = frozenset({"resources"})
 _PART_DIRS = frozenset({"body", "face", "hair", "legs", "torso", "head"})
-UPDATES_SIGNAL = "updates available"
+UPDATES_SIGNAL = "outdated"
 CURRENT_SIGNAL = "up to date"
 STRUCTURAL_SIGNAL = "structural"
 
@@ -127,6 +129,7 @@ class ModNode:
     name: str
     kind: str
     disabled: bool = False
+    empty_folder: bool = False
     children: list["ModNode"] = field(default_factory=list)
     version: ModVersion | None = None
     variant: str | None = None
@@ -150,18 +153,18 @@ def analyze_mods(
     root: Path,
     datasets: Mapping[str, FixerData] | FixerData,
     structure: StructureData | None = None,
-    show_empty: bool = False,
 ) -> tuple[ModNode, AnalysisSummary]:
     """Build the mod tree under root and analyze every mod's and file's version.
 
     ``datasets`` is one FixerData (default variant) or a mapping of variant
     keys to FixerData; a StructureData also counts pending structural fixes.
-    With ``show_empty`` on, empty directories become category nodes too.
+    Empty directories (no mods anywhere beneath) are built as category nodes
+    with ``empty_folder=True``; the UI decides whether to display them.
     """
     root = Path(root)
     if isinstance(datasets, FixerData):
         datasets = {DEFAULT_VARIANT: datasets}
-    tree, skipped, root_acts_as_mod = _build_tree(root, show_empty=show_empty)
+    tree, skipped, root_acts_as_mod = _build_tree(root)
     ladders = {
         variant: version_ladder(dataset.entries)
         for variant, dataset in datasets.items()
@@ -247,6 +250,18 @@ def _count_ini_files(directory: str) -> int:
     return total
 
 
+def _dir_has_loose_file(directory: Path) -> bool:
+    """True when directory directly holds at least one non-.ini file."""
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if entry.is_file() and not entry.name.lower().endswith(".ini"):
+                    return True
+    except OSError:
+        pass
+    return False
+
+
 def _scan_dir(
     root: Path,
     parts: tuple[str, ...],
@@ -296,6 +311,9 @@ def _mod_roots(
 
     Each ini's candidate chain runs root-down to its parent, and the first
     directory on it that directly holds an included ini or a mod.json wins.
+    Container and part-pack winners are then promoted to their parent, and a
+    final single-pass wrapper promotion moves a winner up to a parent that
+    holds only loose non-.ini files plus that one nested winner.
     """
     mod_roots: set[Path] = set()
     for path in included:
@@ -329,10 +347,23 @@ def _mod_roots(
             and all(other.name.lower() in _PART_DIRS for other in siblings)
         ):
             promoted[winner] = parent
-    return {promoted.get(winner, winner) for winner in mod_roots}
+    winners = {promoted.get(winner, winner) for winner in mod_roots}
+    wrapper_promoted: dict[Path, Path] = {}
+    for winner in winners:
+        parent = winner.parent
+        if len(winner.parts) < len(root.parts) + 2:
+            continue
+        if parent in dirs_with_ini or parent in dirs_with_mod_json:
+            continue
+        if not _dir_has_loose_file(parent):
+            continue
+        if any(other != winner and other.parent == parent for other in winners):
+            continue
+        wrapper_promoted[winner] = parent
+    return {wrapper_promoted.get(winner, winner) for winner in winners}
 
 
-def _build_tree(root: Path, show_empty: bool = False) -> tuple[ModNode, int, bool]:
+def _build_tree(root: Path) -> tuple[ModNode, int, bool]:
     """Build the mod tree; returns (root node, excluded backups, root acts as a mod)."""
     dirs: set[tuple[str, ...]] = set()
     included_parts: list[tuple[str, ...]] = []
@@ -354,6 +385,7 @@ def _build_tree(root: Path, show_empty: bool = False) -> tuple[ModNode, int, boo
     }
     nodes: dict[tuple[str, ...], ModNode] = {}
     for parts in sorted(dirs, key=lambda item: (len(item), item)):
+        empty = False
         if not parts:
             kind = "root"
             name = root.name or str(root)
@@ -366,16 +398,16 @@ def _build_tree(root: Path, show_empty: bool = False) -> tuple[ModNode, int, boo
         elif any(parts[:index] in mod_parts for index in range(len(parts))):
             kind = "subfolder"
             name = parts[-1]
-        elif show_empty:
+        else:
             kind = "category"
             name = parts[-1]
-        else:
-            continue
+            empty = True
         nodes[parts] = ModNode(
             path=root.joinpath(*parts),
             name=name,
             kind=kind,
             disabled=(parts[-1] if parts else root.name).startswith(_DISABLED_PREFIX),
+            empty_folder=empty,
         )
     for parts, node in nodes.items():
         if not parts:
@@ -613,7 +645,7 @@ def _version_subtree_files(
 def aggregate_updates(node: ModNode) -> str:
     """Subtree update signal for a version-less directory row (category/subfolder).
 
-    "updates available" outranks "structural", which outranks "up to date";
+    "outdated" outranks "structural", which outranks "up to date";
     "" when no nested versioned node is classifiable.
     """
     outdated = False

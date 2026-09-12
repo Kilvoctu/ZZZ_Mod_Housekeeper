@@ -15,5 +15,5 @@ backups/
 *.7z
 *.exe
 *.lock
-settings.ini
-presets.json
+*.bak
+state.json

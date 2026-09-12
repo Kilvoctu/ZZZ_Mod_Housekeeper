@@ -29,6 +29,10 @@ if not exist "icon.ico" (
     exit /b 1
 )
 
+if exist "ZZZModKeeper.exe" (
+    for %%F in ("ZZZModKeeper.exe") do echo Current root exe timestamp: %%~tF
+)
+
 "%VPYTHON%" -c "import PySide6" >nul 2>&1
 if errorlevel 1 (
     echo == Installing requirements ==
@@ -69,6 +73,8 @@ if errorlevel 1 (
     echo [ERROR] Copy to project root failed.
     exit /b 1
 )
+
+for %%F in ("ZZZModKeeper.exe") do echo Rebuilt root exe timestamp: %%~tF
 
 echo == Cleaning build artifacts... ==
 if exist dist rmdir /s /q dist

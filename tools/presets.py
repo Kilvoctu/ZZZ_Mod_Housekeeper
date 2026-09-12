@@ -1,35 +1,22 @@
-"""Named snapshots of enabled mods, stored as JSON.
+"""Named snapshots of enabled mods, stored in state.json.
 
 A preset maps a name to the relative posix paths of the mod folders it
 considers enabled; the GUI later applies one by toggling those folders.
 """
 
-import json
 from collections.abc import Iterable
 from pathlib import Path
 
 from .mods import ModNode
-from .repo import project_root
+from .state import load_state, save_state
 
-_JSON_NAME = "presets.json"
 _DISABLED_PREFIX = "DISABLED_"
 
 
-def presets_path(root: Path | None = None) -> Path:
-    """JSON file holding the presets, directly under the mods root."""
-    return Path(root if root is not None else project_root()) / _JSON_NAME
-
-
 def load_presets(root: Path | None = None) -> dict[str, list[str]]:
-    """Read {name: sorted enabled paths}; {} on missing, undecodable or non-dict JSON."""
-    try:
-        raw = json.loads(presets_path(root).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    if not isinstance(raw, dict):
-        return {}
+    """Read {name: sorted enabled paths} from state.json; {} on missing, undecodable or non-dict JSON."""
     presets: dict[str, list[str]] = {}
-    for name, value in raw.items():
+    for name, value in load_state(root)["presets"].items():
         if isinstance(name, str) and isinstance(value, list):
             presets[name] = sorted(entry for entry in value if isinstance(entry, str))
     return presets
@@ -211,6 +198,11 @@ def enabled_relative_paths(tree: ModNode, root: Path) -> frozenset[str]:
     return frozenset(enabled)
 
 
+def mod_relative_paths(tree: ModNode, root: Path) -> frozenset[str]:
+    """Canonical relative posix paths of every mod node, enabled or disabled."""
+    return frozenset(_node_relative(node, root) for node in _walk(tree) if node.kind == "mod")
+
+
 def _walk(node: ModNode) -> Iterable[ModNode]:
     """Depth-first walk: the node then its children in order."""
     yield node
@@ -219,7 +211,7 @@ def _walk(node: ModNode) -> Iterable[ModNode]:
 
 
 def _write(presets: dict[str, list[str]], root: Path | None) -> None:
-    """Serialize presets with indent 2, sorted keys and a trailing newline."""
-    presets_path(root).write_text(
-        json.dumps(presets, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    """Merge the presets into state.json and save it atomically."""
+    state = load_state(root)
+    state["presets"] = presets
+    save_state(state, root)
