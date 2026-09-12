@@ -59,14 +59,24 @@ class FixerData:
     user_patches: dict[str, ChangeEntry] = field(default_factory=dict)
 
 
-def load_fixer_data(repo_dir: Path, *, include_pcdata: bool = False) -> FixerData:
+def empty_fixer_data() -> FixerData:
+    """A FixerData with no known hashes: safe for scan/analyze, fixes nothing."""
+    return FixerData(chains={}, ib_index_changes={}, db=CharacterDB())
+
+
+def load_fixer_data(repo_dir: Path | None, *, include_pcdata: bool = False) -> FixerData:
     """Parse the data repo changelog and character JSONs into FixerData.
 
     Legacy pre-2.0 history merges ahead of the changelog; ``include_pcdata`` ingests
     the importer dataset as hint-gated gap-fill (buffer-coupled hashes excluded).
+    A ``None`` ``repo_dir`` skips the changelog and character DB entirely (no repo
+    cloned) while legacy chains, pcdata gap-fill and user patches still apply.
     """
-    repo_dir = Path(repo_dir)
-    real = parse_changelog_file(changelog_path(repo_dir))
+    if repo_dir is None:
+        real: list[ChangeEntry] = []
+    else:
+        repo_dir = Path(repo_dir)
+        real = parse_changelog_file(changelog_path(repo_dir))
     pc_rows: list[ChangeEntry] = []
     excluded: frozenset[str] = frozenset()
     first_index = 1
@@ -133,10 +143,11 @@ def load_fixer_data(repo_dir: Path, *, include_pcdata: bool = False) -> FixerDat
     max_index = max((entry.version_index for entry in entries), default=0)
     for patch in patches.values():
         patch.version_index = max_index + 2
+    db = CharacterDB() if repo_dir is None else load_characters(repo_dir)
     return FixerData(
         chains=chains,
         ib_index_changes=ib_index_changes,
-        db=load_characters(repo_dir),
+        db=db,
         entries=entries,
         user_patches=patches,
     )

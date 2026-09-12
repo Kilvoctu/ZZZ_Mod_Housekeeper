@@ -12,6 +12,7 @@ from tools.characters import CharacterDB, HashRef
 from tools.fixer import (
     FixerData,
     collect_texture_override_hashes,
+    empty_fixer_data,
     load_fixer_data,
 )
 from tools.model import ChangeEntry, Character, Component
@@ -991,6 +992,32 @@ def test_mixed_bucket_without_hint_labels_first_applied_step():
         version.unknown_count,
         version.total,
     ) == (0, 0, 1)
+
+
+def test_analyze_mods_empty_dataset_is_safe(tmp_path):
+    """A fallback dataset with no knowledge analyzes without raising (guards
+    the old datasets[effective] KeyError): the hash stays unknown and the mod
+    is still counted."""
+    root = tmp_path / "mods"
+    (root / "Ghost").mkdir(parents=True)
+    (root / "Ghost" / "g.ini").write_text(
+        "[TextureOverrideG]\nhash = deadbeef\n", encoding="utf-8"
+    )
+
+    tree, summary = mods.analyze_mods(
+        root, {repo.DEFAULT_VARIANT: empty_fixer_data()}
+    )
+
+    ghost = by_name(tree, "Ghost")
+    assert ghost.kind == "mod"
+    version = version_of(ghost)
+    assert version.label == "unknown"
+    assert version.unknown_count == 1
+    assert version.outdated_count == 0
+    assert summary.mods == 1
+    assert summary == mods.AnalysisSummary(
+        mods=1, current=0, outdated=0, unknown=1, backups_skipped=0, files_scanned=1
+    )
 
 
 def test_analyze_mods_end_to_end(tmp_path):

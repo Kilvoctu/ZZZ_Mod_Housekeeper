@@ -25,12 +25,13 @@ This app is built mainly for personal use, as I wanted per-mod operations.
 
 ## Usage
 
-1. Run `build_exe.bat` and wait.
-2. Run `ZZZModKeeper.exe`.
-3. Click **Update hashes** (needs internet for the first download).  
+1. Download/clone this repo.
+2. Run `build_exe.bat` and wait.
+3. Run `ZZZModKeeper.exe`.
+4. Optional: click **Update hashes** (needs internet for the first download) to enable the fix features; mod management works without hash data.  
 *Alternatively, download hash data from sources below and drop into `data/`.
-4. Browse to your mod folder.
-5. Hopefully the rest is self-explanatory.
+5. Browse to your mod folder.
+6. Hopefully the rest is self-explanatory.
 
 ## Known Issues
 

@@ -1,4 +1,4 @@
-"""Tests for tools.ui.worker: import_archive_worker drives extraction on a thread."""
+"""Tests for tools.ui.worker: data and archive workers running on a thread."""
 
 import shutil
 import subprocess
@@ -11,7 +11,13 @@ import pytest
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
 from tools import importer
-from tools.ui.worker import import_archive_worker
+from tools.fixer import FixerData
+from tools.repo import DEFAULT_VARIANT, RepoError
+from tools.ui.worker import (
+    import_archive_worker,
+    load_all_data_worker,
+    update_data_worker,
+)
 
 
 def build_archive(path: Path, members: dict[str, str]) -> Path:
@@ -126,3 +132,73 @@ def test_import_archive_worker_7z(tmp_path):
     assert holder["result"] == 2
     assert (destination / "MyMod" / "a.ini").read_text() == "a"
     assert (destination / "MyMod" / "b.buf").read_text() == "b"
+
+
+def patch_empty_datasets(monkeypatch, tmp_path):
+    """Point every dataset source at empty temp paths: no clones, no static
+    datasets, no user patches."""
+    monkeypatch.setattr(
+        "tools.ui.worker.default_cache_dir",
+        lambda variant=DEFAULT_VARIANT: tmp_path / f"cache-{variant}",
+    )
+    missing = tmp_path / "no-such-static-dataset.json"
+    monkeypatch.setattr("tools.fixer.legacy_chains_path", lambda: missing)
+    monkeypatch.setattr("tools.fixer.player_character_data_path", lambda: missing)
+    monkeypatch.setattr("tools.patches.user_patches_dir", lambda: tmp_path)
+
+
+def test_load_all_data_worker_falls_back_without_local_data(tmp_path, monkeypatch):
+    """No locally cloned variant repo: the job returns a fallback dataset
+    under the default variant instead of raising; heads stay empty."""
+    patch_empty_datasets(monkeypatch, tmp_path)
+
+    worker = load_all_data_worker()
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    result = holder["result"]
+    assert isinstance(result, tuple) and len(result) == 4
+    caches, datasets, heads, structure = result
+    assert set(caches) == {"2048p", "1024p"}
+    assert set(datasets) == {DEFAULT_VARIANT}
+    fallback = datasets[DEFAULT_VARIANT]
+    assert isinstance(fallback, FixerData)
+    assert fallback.chains == {}
+    assert fallback.entries == []
+    assert set(heads) == {"2048p", "1024p"}
+    assert all(head == "" for head in heads.values())
+    assert structure is not None
+    assert any("No hash data at all" in message for message in logs)
+
+
+def test_update_data_worker_offline_returns_fallback(tmp_path, monkeypatch):
+    """ensure_repo failing for every variant logs 'Could not update' plus the
+    fallback hint and still returns the fallback dataset; nothing raises."""
+
+    def offline(*_args, **_kwargs):
+        raise RepoError("offline")
+
+    monkeypatch.setattr("tools.ui.worker.ensure_repo", offline)
+    patch_empty_datasets(monkeypatch, tmp_path)
+
+    worker = update_data_worker()
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    result = holder["result"]
+    assert isinstance(result, tuple) and len(result) == 4
+    repo_dirs, datasets, heads, structure = result
+    assert repo_dirs == {}
+    assert set(datasets) == {DEFAULT_VARIANT}
+    assert isinstance(datasets[DEFAULT_VARIANT], FixerData)
+    assert heads == {DEFAULT_VARIANT: ""}
+    assert structure is not None
+    assert any(
+        "Could not update" in message and "offline" in message
+        for message in logs
+    )
+    assert any("No hash data at all" in message for message in logs)

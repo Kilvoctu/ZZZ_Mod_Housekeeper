@@ -953,11 +953,11 @@ def test_folder_key_relative_inside_app_root(tmp_path, monkeypatch):
     """Mods folders inside the app root key on the relative path."""
     root = tmp_path / "app"
     (root / "mods").mkdir(parents=True)
-    monkeypatch.setattr(backups, "project_root", lambda: root)
+    monkeypatch.setattr("tools.backups.project_root", lambda: root)
     original = folder_key(root / "mods")
     relocated = tmp_path / "moved"
     (relocated / "mods").mkdir(parents=True)
-    monkeypatch.setattr(backups, "project_root", lambda: relocated)
+    monkeypatch.setattr("tools.backups.project_root", lambda: relocated)
     assert folder_key(relocated / "mods") == original
 
 
@@ -965,7 +965,7 @@ def test_folder_key_absolute_outside_app_root(tmp_path, monkeypatch):
     """Mods folders outside the app root keep the absolute-path key."""
     mods = tmp_path / "mods"
     mods.mkdir()
-    monkeypatch.setattr(backups, "project_root", lambda: tmp_path / "app")
+    monkeypatch.setattr("tools.backups.project_root", lambda: tmp_path / "app")
     expected = f"mods-{sha1(str(mods.resolve()).encode('utf-8')).hexdigest()[:8]}"
     assert folder_key(mods) == expected
 
@@ -975,7 +975,7 @@ def test_migrate_store_key_adopts_legacy(tmp_path, monkeypatch):
     root = tmp_path / "app"
     mods = root / "mods"
     mods.mkdir(parents=True)
-    monkeypatch.setattr(backups, "project_root", lambda: root)
+    monkeypatch.setattr("tools.backups.project_root", lambda: root)
     store = tmp_path / "backups"
     legacy = store / f"mods-{sha1(str(mods.resolve()).encode('utf-8')).hexdigest()[:8]}"
     legacy.mkdir(parents=True)
@@ -992,7 +992,7 @@ def test_migrate_store_key_no_ops(tmp_path, monkeypatch):
     root = tmp_path / "app"
     mods = root / "mods"
     mods.mkdir(parents=True)
-    monkeypatch.setattr(backups, "project_root", lambda: root)
+    monkeypatch.setattr("tools.backups.project_root", lambda: root)
     store = tmp_path / "backups"
     current = store / folder_key(mods)
     current.mkdir(parents=True)
@@ -1888,6 +1888,84 @@ def test_pcdata_absent_file_means_unchanged_behavior(tmp_path, monkeypatch):
     assert with_pc.entries == base.entries
     assert with_pc.chains == base.chains
     assert with_pc.ib_index_changes == base.ib_index_changes
+
+
+def empty_patches_dir(monkeypatch, tmp_path):
+    """Point tools.patches.user_patches_dir at an empty temp data folder."""
+    patches_dir = tmp_path / "data"
+    patches_dir.mkdir()
+    monkeypatch.setattr("tools.patches.user_patches_dir", lambda: patches_dir)
+    return patches_dir
+
+
+def test_load_fixer_data_none_repo_all_sources_missing(tmp_path, monkeypatch):
+    """repo_dir=None with every optional source absent yields an all-empty
+    dataset: no chains, entries, patches or characters (never raises)."""
+    static_paths(monkeypatch, tmp_path)
+    empty_patches_dir(monkeypatch, tmp_path)
+
+    data = load_fixer_data(None)
+
+    assert isinstance(data, FixerData)
+    assert data.chains == {}
+    assert data.entries == []
+    assert data.ib_index_changes == {}
+    assert data.user_patches == {}
+    assert isinstance(data.db, CharacterDB)
+    assert data.db.characters == {}
+    assert data.db.reverse == {}
+
+
+def test_load_fixer_data_none_repo_user_patches_still_apply(tmp_path, monkeypatch):
+    """A data/*.txt patch survives the repo-less load and resolves as the
+    authoritative chain step for its from-hash."""
+    static_paths(monkeypatch, tmp_path)
+    patches_dir = empty_patches_dir(monkeypatch, tmp_path)
+    (patches_dir / "patches.txt").write_text(
+        "deadbeef to feedface\n", encoding="utf-8"
+    )
+
+    data = load_fixer_data(None)
+
+    assert set(data.user_patches) == {"deadbeef"}
+    patch = data.user_patches["deadbeef"]
+    assert (patch.role, patch.from_hash, patch.to_hash) == (
+        "user",
+        "deadbeef",
+        "feedface",
+    )
+    assert resolve_hash_chain("deadbeef", "", data) == [patch]
+
+
+def test_load_fixer_data_none_repo_pcdata_gap_fill_applies(tmp_path, monkeypatch):
+    """pcdata rows gap-fill chains and ib_index_changes even without any repo
+    clone, while the character DB stays empty."""
+    static_paths(
+        monkeypatch,
+        tmp_path,
+        pcdata=[
+            {
+                "From": "ffff0001",
+                "To": "ffff0002",
+                "FromIndexes": "[0]",
+                "ToIndexes": "[500]",
+                "Comment": "3 CharaC BodyA ib",
+            }
+        ],
+    )
+    empty_patches_dir(monkeypatch, tmp_path)
+
+    data = load_fixer_data(None, include_pcdata=True)
+
+    assert [(e.role, e.version_label) for e in data.entries] == [
+        ("pcdata", "importer #3")
+    ]
+    assert [e.role for e in data.ib_index_changes["ffff0001"]] == ["pcdata"]
+    value, steps = walk_index_value(0, "ffff0001", data)
+    assert (value, [s.to_hash for s in steps]) == (500, ["ffff0002"])
+    assert isinstance(data.db, CharacterDB)
+    assert data.db.characters == {}
+    assert data.db.reverse == {}
 
 
 def belle_component(object_indexes=(0, 45060, 45324, 46932), classifications=("A", "B", "C", "D")):
