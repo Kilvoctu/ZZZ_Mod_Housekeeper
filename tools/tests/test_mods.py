@@ -129,6 +129,7 @@ def test_tree_classification(tmp_path):
 
     assert inventory(tree) == [
         ("category", "Category", False),
+        ("category", "EmptyBranch", False),
         ("file", "a.ini", False),
         ("file", "fashion.ini", False),
         ("file", "loose.ini", False),
@@ -142,6 +143,7 @@ def test_tree_classification(tmp_path):
         ("subfolder", "Assets", False),
         ("subfolder", "body", False),
     ]
+    assert by_name(tree, "EmptyBranch").empty_folder is True
 
     loose = by_name(tree, "LooseMod")
     fashion = by_name(tree, "DISABLED_Fashion")
@@ -154,7 +156,11 @@ def test_tree_classification(tmp_path):
     assert nearest_mod(by_name(tree, "loose.ini"), parents) is loose
     assert nearest_mod(by_name(tree, "x.ini"), parents) is pack
 
-    assert [child.name for child in tree.children] == ["Category", "LooseMod"]
+    assert [child.name for child in tree.children] == [
+        "Category",
+        "EmptyBranch",
+        "LooseMod",
+    ]
     assert [child.name for child in fashion.children] == [
         "Assets",
         "body",
@@ -188,7 +194,7 @@ def test_tree_root_acts_as_mod(tmp_path):
     assert_backups_excluded(tree)
 
 
-def test_mod_json_without_ini_is_pruned(tmp_path):
+def test_mod_json_without_ini_is_empty_folder(tmp_path):
     root = tmp_path / "mods"
     category = root / "Category"
     dead = category / "DeadPack"
@@ -199,13 +205,17 @@ def test_mod_json_without_ini_is_pruned(tmp_path):
     (alive / "alive.ini").write_text("[TextureOverrideA]\n", encoding="utf-8")
     tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
+    dead_node = by_name(tree, "DeadPack")
+    assert dead_node.kind == "category"
+    assert dead_node.empty_folder is True
+    assert by_name(tree, "Category").empty_folder is False
     assert inventory(tree) == [
         ("category", "Category", False),
+        ("category", "DeadPack", False),
         ("file", "alive.ini", False),
         ("mod", "AliveMod", False),
         ("root", "mods", False),
     ]
-    assert [node.name for node in walk_nodes(tree) if node.name == "DeadPack"] == []
 
 
 def test_mod_json_pack_collapses_parts(tmp_path):
@@ -418,8 +428,10 @@ def test_show_empty_folders_as_categories(tmp_path):
     (root / "Group" / "RealMod" / "r.ini").write_text(
         "[TextureOverrideR]\n", encoding="utf-8"
     )
-    tree, _summary = mods.analyze_mods(root, EMPTY_DATA, show_empty=True)
-    assert by_name(tree, "Anby").kind == "category"
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
+    anby = by_name(tree, "Anby")
+    assert anby.kind == "category"
+    assert anby.empty_folder is True
     assert inventory(tree) == [
         ("category", "Anby", False),
         ("category", "Group", False),
@@ -427,19 +439,21 @@ def test_show_empty_folders_as_categories(tmp_path):
         ("mod", "RealMod", False),
         ("root", "mods", False),
     ]
-    hidden, _summary = mods.analyze_mods(root, EMPTY_DATA)
-    assert [node.name for node in walk_nodes(hidden) if node.name == "Anby"] == []
 
 
-def test_nested_empty_dirs_show_when_enabled(tmp_path):
+def test_nested_empty_dirs_marked_as_empty_folders(tmp_path):
     root = tmp_path / "mods"
     (root / "Anby" / "inner").mkdir(parents=True)
-    tree, _summary = mods.analyze_mods(root, EMPTY_DATA, show_empty=True)
+    (root / "Group" / "RealMod").mkdir(parents=True)
+    (root / "Group" / "RealMod" / "r.ini").write_text(
+        "[TextureOverrideR]\n", encoding="utf-8"
+    )
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
     assert by_name(tree, "Anby").kind == "category"
     assert by_name(tree, "inner").kind == "category"
-    hidden, _summary = mods.analyze_mods(root, EMPTY_DATA)
-    assert [node.name for node in walk_nodes(hidden) if node.name == "Anby"] == []
-    assert [node.name for node in walk_nodes(hidden) if node.name == "inner"] == []
+    assert by_name(tree, "Anby").empty_folder is True
+    assert by_name(tree, "inner").empty_folder is True
+    assert by_name(tree, "Group").empty_folder is False
 
 
 def test_multi_part_parts_fold_into_one_mod(tmp_path):
@@ -505,6 +519,149 @@ def test_single_part_folder_not_promoted(tmp_path):
         ("mod", "body", False),
         ("root", "mods", False),
     ]
+
+
+def test_wrapper_with_loose_file_promoted_to_mod(tmp_path):
+    root = tmp_path / "mods"
+    wrapper = root / "Claret Flint" / "claret_mod"
+    (wrapper / "inner").mkdir(parents=True)
+    (wrapper / "Readme.txt").write_text("toggles", encoding="utf-8")
+    (wrapper / "inner" / "m.ini").write_text(
+        "[TextureOverrideX]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Claret Flint", False),
+        ("file", "m.ini", False),
+        ("mod", "claret_mod", False),
+        ("root", "mods", False),
+        ("subfolder", "inner", False),
+    ]
+    assert by_name(tree, "claret_mod").kind == "mod"
+    assert by_name(tree, "inner").kind == "subfolder"
+    assert by_name(tree, "Claret Flint").kind == "category"
+    parents = parent_map(tree)
+    assert nearest_mod(by_name(tree, "m.ini"), parents) is by_name(tree, "claret_mod")
+
+
+def test_wrapper_without_loose_file_not_promoted(tmp_path):
+    root = tmp_path / "mods"
+    wrapper = root / "Claret Flint" / "claret_mod"
+    (wrapper / "inner").mkdir(parents=True)
+    (wrapper / "inner" / "m.ini").write_text(
+        "[TextureOverrideX]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Claret Flint", False),
+        ("category", "claret_mod", False),
+        ("file", "m.ini", False),
+        ("mod", "inner", False),
+        ("root", "mods", False),
+    ]
+    assert by_name(tree, "claret_mod").kind == "category"
+    assert by_name(tree, "inner").kind == "mod"
+
+
+def test_wrapper_two_mod_children_not_promoted(tmp_path):
+    root = tmp_path / "mods"
+    wrapper = root / "Cat"
+    (wrapper / "modA").mkdir(parents=True)
+    (wrapper / "modB").mkdir()
+    (wrapper / "Readme.txt").write_text("toggles", encoding="utf-8")
+    (wrapper / "modA" / "a.ini").write_text(
+        "[TextureOverrideA]\n", encoding="utf-8"
+    )
+    (wrapper / "modB" / "b.ini").write_text(
+        "[TextureOverrideB]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Cat", False),
+        ("file", "a.ini", False),
+        ("file", "b.ini", False),
+        ("mod", "modA", False),
+        ("mod", "modB", False),
+        ("root", "mods", False),
+    ]
+    assert by_name(tree, "Cat").kind == "category"
+    assert by_name(tree, "modA").kind == "mod"
+    assert by_name(tree, "modB").kind == "mod"
+
+
+def test_wrapper_holding_own_ini_already_mod(tmp_path):
+    root = tmp_path / "mods"
+    wrapper = root / "claret_mod"
+    (wrapper / "inner").mkdir(parents=True)
+    (wrapper / "Readme.txt").write_text("toggles", encoding="utf-8")
+    (wrapper / "a.ini").write_text(
+        "[TextureOverrideA]\n", encoding="utf-8"
+    )
+    (wrapper / "inner" / "b.ini").write_text(
+        "[TextureOverrideB]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("file", "a.ini", False),
+        ("file", "b.ini", False),
+        ("mod", "claret_mod", False),
+        ("root", "mods", False),
+        ("subfolder", "inner", False),
+    ]
+    assert by_name(tree, "claret_mod").kind == "mod"
+    assert by_name(tree, "inner").kind == "subfolder"
+    assert summary == mods.AnalysisSummary(
+        mods=1, current=0, outdated=0, unknown=1, backups_skipped=0, files_scanned=2
+    )
+
+
+def test_disabled_wrapper_promoted_keeps_disabled_flag(tmp_path):
+    root = tmp_path / "mods"
+    wrapper = root / "Cat" / "DISABLED_claret_mod"
+    (wrapper / "inner").mkdir(parents=True)
+    (wrapper / "Readme.txt").write_text("toggles", encoding="utf-8")
+    (wrapper / "inner" / "m.ini").write_text(
+        "[TextureOverrideX]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Cat", False),
+        ("file", "m.ini", False),
+        ("mod", "DISABLED_claret_mod", True),
+        ("root", "mods", False),
+        ("subfolder", "inner", False),
+    ]
+    promoted = by_name(tree, "DISABLED_claret_mod")
+    assert promoted.kind == "mod"
+    assert promoted.disabled is True
+    assert by_name(tree, "Cat").kind == "category"
+
+
+def test_promoted_wrapper_version_and_summary(tmp_path):
+    root = tmp_path / "mods"
+    wrapper = root / "Claret Flint" / "claret_mod"
+    (wrapper / "inner").mkdir(parents=True)
+    (wrapper / "Readme.txt").write_text("toggles", encoding="utf-8")
+    (wrapper / "inner" / "m.ini").write_text(
+        "[TextureOverrideM]\nhash = aaaa0000\n", encoding="utf-8"
+    )
+    data = version_data(LADDER_ENTRIES, {"aaaa0000": [HashRef("CharaA", "Body", "ib")]})
+    tree, summary = mods.analyze_mods(root, data)
+
+    claret = by_name(tree, "claret_mod")
+    assert claret.kind == "mod"
+    version = version_of(claret)
+    assert (version.label, version.is_latest) == ("2.0", False)
+    assert (version.outdated_count, version.total) == (1, 1)
+    assert version_of(by_name(tree, "m.ini")) == version
+    assert summary == mods.AnalysisSummary(
+        mods=1, current=0, outdated=1, unknown=0, backups_skipped=0, files_scanned=1
+    )
 
 
 def test_promoted_mod_version_and_summary(tmp_path):
@@ -1711,7 +1868,7 @@ def test_aggregate_updates_nested_outdated():
             make_node("Stale", "mod", version=version_counts(outdated=1, current=1)),
         ],
     )
-    assert mods.aggregate_updates(category) == "updates available"
+    assert mods.aggregate_updates(category) == "outdated"
 
     subfolder = make_node(
         "body",
@@ -1726,7 +1883,7 @@ def test_aggregate_updates_nested_outdated():
             subfolder,
         ],
     )
-    assert mods.aggregate_updates(nested) == "updates available"
+    assert mods.aggregate_updates(nested) == "outdated"
 
 
 def test_aggregate_updates_nested_current_with_unknown():
@@ -1778,7 +1935,7 @@ def test_aggregate_updates_transitive_through_versionless_dirs():
             )
         ],
     )
-    assert mods.aggregate_updates(outdated) == "updates available"
+    assert mods.aggregate_updates(outdated) == "outdated"
 
 
 def test_aggregate_updates_structural_only_subtree():
@@ -1810,7 +1967,7 @@ def test_aggregate_updates_outdated_beats_structural():
             make_node("Stale", "mod", version=version_counts(outdated=1)),
         ],
     )
-    assert mods.aggregate_updates(category) == "updates available"
+    assert mods.aggregate_updates(category) == "outdated"
 
 
 def test_analyze_structural_breakage_counts(tmp_path):
@@ -1873,7 +2030,7 @@ def test_updates_text_fires_for_structural_only():
 
 def test_updates_text_outdated_beats_structural():
     version = ModVersion(current_count=1, outdated_count=2, total=3, structural_count=1)
-    assert updates_text(version, as_mod=True) == "updates available"
+    assert updates_text(version, as_mod=True) == "outdated"
     assert updates_color(version, as_mod=True) == QColor("#c47f00")
 
 

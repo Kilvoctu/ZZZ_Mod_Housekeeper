@@ -42,6 +42,7 @@ from ..fixer import (
 from ..mods import ModNode, analyze_mods, rename_mod_folder, set_mod_enabled
 from ..importer import extract_archive
 from ..presets import remove_preset_paths, retarget_preset_paths
+from ..promoted import remove_promoted_paths, retarget_promoted_paths
 from ..repo import (
     DEFAULT_VARIANT,
     REPO_VARIANTS,
@@ -233,7 +234,6 @@ def analyze_worker(
     mods_dir: Path | str,
     datasets: Mapping[str, FixerData] | FixerData,
     structure: StructureData | None = None,
-    show_empty: bool = False,
     parent: QObject | None = None,
 ) -> TaskWorker:
     """Worker that analyses a mods folder; ``done`` carries (ModNode, AnalysisSummary).
@@ -248,7 +248,6 @@ def analyze_worker(
             Path(mods_dir),
             mapping,
             structure if structure is not None else structure_for(mapping),
-            show_empty=show_empty,
         )
 
     return TaskWorker(job, parent=parent)
@@ -450,6 +449,12 @@ def rename_folder_worker(
         changed = retarget_preset_paths([(old_entry, new_entry)])
         if changed:
             log(f"Presets updated: {changed} path(s) now point at '{new.name}'")
+        promoted_changed = retarget_promoted_paths([(old_entry, new_entry)])
+        if promoted_changed:
+            log(
+                f"Preview images updated: {promoted_changed} path(s) "
+                f"now point at '{new.name}'"
+            )
         moved = retarget_store_folder(
             default_backups_dir(), mods, rel_old, rel_new
         )
@@ -505,6 +510,9 @@ def delete_folder_worker(
         removed = remove_preset_paths([old_entry])
         if removed:
             log(f"Presets updated: {removed} path(s) removed")
+        promoted_removed = remove_promoted_paths([old_entry])
+        if promoted_removed:
+            log(f"Preview images removed: {promoted_removed} path(s)")
         if delete_store_folder(default_backups_dir(), mods, rel):
             log(f"Backup history purged for '{old.name}'")
         canonical = "/".join(

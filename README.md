@@ -1,11 +1,12 @@
 #  <img src="icon.ico" alt="icon" align="top" width="36"> ZZZ Mod Housekeeper
 
 Simple GUI that can fix some ZZZ mods and do basic mod management. 
-This app is built mainly for personal use, as I wanted per-mod operations.
+This app is built mainly for personal use.
 
 ## Requirements
 
 - Python 3.10+
+- Internet for initial setup
 
 ## Features
 
@@ -23,14 +24,14 @@ This app is built mainly for personal use, as I wanted per-mod operations.
   - Top-level folder creation.
   - Renaming and deleting folders/mods.
   - Mod preset loadout management.
-  - Context menu for mod info (author, toggles) and images, if any.
+  - Context menu for mod info (author, toggles) and images.
 
-## Usage
+## Setup/Usage
 
 1. Download/clone this repo.
-2. Run `build_exe.bat` and wait.
+2. Run `build_exe.bat` and wait until it's done.
 3. Run `ZZZModKeeper.exe`.
-4. Optional: click **Update hashes** to enable the fix features (needs internet for the first download); mod management works without hash data.  
+4. Optional: click **Update hashes** to enable the fix features; mod management works without hash data.  
 *Alternatively, download hash data from sources below and drop into `data/`.
 5. Browse to your mod folder.
 6. Hopefully the rest is self-explanatory.
@@ -38,7 +39,8 @@ This app is built mainly for personal use, as I wanted per-mod operations.
 ## Known Issues
 
 - Can't guarantee it'll fix every mod.
-- Various stuff that I haven't felt like adding.
+- Don't include any loose file in a category folder; category may falsely be identified as a mod.
+- Missing various stuff that I haven't felt like adding.
 - Jank.
 
 ## Credits & license

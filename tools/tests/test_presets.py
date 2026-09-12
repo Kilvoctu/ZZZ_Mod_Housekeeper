@@ -1,10 +1,10 @@
-"""Tests for tools.presets on tmp_path JSONs (never the real project root)."""
+"""Tests for tools.presets against tmp_path state.json (never the real project root)."""
 
 from pathlib import Path
 
 import pytest
 
-from tools import presets
+from tools import presets, state
 from tools.mods import ModNode
 
 
@@ -48,7 +48,7 @@ def test_save_and_load_round_trip(tmp_path):
         "Casual": ["Cat/DISABLED_Old", "Cat/Fashion", "Stays"]
     }
     assert presets.preset_names(tmp_path) == ["Casual"]
-    assert presets.presets_path(tmp_path).read_bytes().endswith(b"\n")
+    assert state.state_path(tmp_path).read_bytes().endswith(b"\n")
 
 
 def test_save_preset_overwrites_existing_name(tmp_path):
@@ -63,14 +63,14 @@ def test_save_preset_blank_name_raises_and_writes_nothing(tmp_path):
         presets.save_preset("   ", ["Cat/Fashion"], tmp_path)
     with pytest.raises(ValueError):
         presets.save_preset("", ["Cat/Fashion"], tmp_path)
-    assert not presets.presets_path(tmp_path).exists()
+    assert not state.state_path(tmp_path).exists()
 
 
 def test_delete_preset_true_then_false(tmp_path):
     presets.save_preset("Casual", ["Cat/Fashion"], tmp_path)
     assert presets.delete_preset("Casual", tmp_path)
     assert presets.load_presets(tmp_path) == {}
-    assert presets.presets_path(tmp_path).exists()
+    assert state.state_path(tmp_path).exists()
     assert not presets.delete_preset("Casual", tmp_path)
     assert not presets.delete_preset("   ", tmp_path)
 
@@ -97,17 +97,18 @@ def test_preset_names_sorted(tmp_path):
 
 def test_load_presets_returns_empty_on_bad_files(tmp_path):
     assert presets.load_presets(tmp_path) == {}
-    presets.presets_path(tmp_path).write_text("", encoding="utf-8")
+    state.state_path(tmp_path).write_text("", encoding="utf-8")
     assert presets.load_presets(tmp_path) == {}
-    presets.presets_path(tmp_path).write_text("{oops", encoding="utf-8")
+    state.state_path(tmp_path).write_text("{oops", encoding="utf-8")
     assert presets.load_presets(tmp_path) == {}
-    presets.presets_path(tmp_path).write_text("[1, 2]", encoding="utf-8")
+    state.state_path(tmp_path).write_text("[1, 2]", encoding="utf-8")
     assert presets.load_presets(tmp_path) == {}
 
 
 def test_load_presets_drops_non_string_entries_and_non_list_values(tmp_path):
-    presets.presets_path(tmp_path).write_text(
-        '{"Casual": ["Cat/Fashion", 1, ["nested"], "Stays"], "Broken": "no"}',
+    state.state_path(tmp_path).write_text(
+        '{"presets": {"Casual": ["Cat/Fashion", 1, ["nested"], "Stays"], '
+        '"Broken": "no"}}',
         encoding="utf-8",
     )
     assert presets.load_presets(tmp_path) == {"Casual": ["Cat/Fashion", "Stays"]}
@@ -231,26 +232,26 @@ def test_retarget_preset_paths_keeps_nested_and_root_prefixes_isolated(tmp_path)
 
 def test_retarget_preset_paths_no_match_leaves_file_untouched(tmp_path):
     presets.save_preset("x", ["Cat/Old"], tmp_path)
-    raw = presets.presets_path(tmp_path).read_bytes()
+    raw = state.state_path(tmp_path).read_bytes()
 
     assert presets.retarget_preset_paths([("Ghost", "New")], tmp_path) == 0
 
-    assert presets.presets_path(tmp_path).read_bytes() == raw
+    assert state.state_path(tmp_path).read_bytes() == raw
 
 
 def test_retarget_preset_paths_skips_blank_and_identical_swaps(tmp_path):
     presets.save_preset("x", ["Old"], tmp_path)
-    raw = presets.presets_path(tmp_path).read_bytes()
+    raw = state.state_path(tmp_path).read_bytes()
 
     assert presets.retarget_preset_paths([("", "New")], tmp_path) == 0
     assert presets.retarget_preset_paths([("   ", "New")], tmp_path) == 0
     assert presets.retarget_preset_paths([("Old", "Old")], tmp_path) == 0
-    assert presets.presets_path(tmp_path).read_bytes() == raw
+    assert state.state_path(tmp_path).read_bytes() == raw
 
 
 def test_retarget_preset_paths_missing_file_writes_nothing(tmp_path):
     assert presets.retarget_preset_paths([("Old", "New")], tmp_path) == 0
-    assert not presets.presets_path(tmp_path).exists()
+    assert not state.state_path(tmp_path).exists()
 
 
 def test_remove_preset_paths_exact_entry(tmp_path):
@@ -271,26 +272,26 @@ def test_remove_preset_paths_category_prefix(tmp_path):
 
 def test_remove_preset_paths_no_match_leaves_file_untouched(tmp_path):
     presets.save_preset("x", ["Cat/Old"], tmp_path)
-    raw = presets.presets_path(tmp_path).read_bytes()
+    raw = state.state_path(tmp_path).read_bytes()
 
     assert presets.remove_preset_paths(["Ghost"], tmp_path) == 0
 
-    assert presets.presets_path(tmp_path).read_bytes() == raw
+    assert state.state_path(tmp_path).read_bytes() == raw
 
 
 def test_remove_preset_paths_skips_blank_paths(tmp_path):
     presets.save_preset("x", ["Cat/Old"], tmp_path)
-    raw = presets.presets_path(tmp_path).read_bytes()
+    raw = state.state_path(tmp_path).read_bytes()
 
     assert presets.remove_preset_paths(["", "  "], tmp_path) == 0
 
-    assert presets.presets_path(tmp_path).read_bytes() == raw
+    assert state.state_path(tmp_path).read_bytes() == raw
 
 
 def test_remove_preset_paths_missing_file_writes_nothing(tmp_path):
     assert presets.remove_preset_paths(["Old"], tmp_path) == 0
 
-    assert not presets.presets_path(tmp_path).exists()
+    assert not state.state_path(tmp_path).exists()
 
 
 def test_remove_preset_paths_prunes_emptied_preset(tmp_path):
@@ -299,15 +300,15 @@ def test_remove_preset_paths_prunes_emptied_preset(tmp_path):
     assert presets.remove_preset_paths(["Old"], tmp_path) == 1
 
     assert presets.load_presets(tmp_path) == {}
-    assert "solo" not in presets.presets_path(tmp_path).read_text(encoding="utf-8")
+    assert "solo" not in state.state_path(tmp_path).read_text(encoding="utf-8")
 
 
 def test_remove_preset_paths_keeps_preexisting_empty_preset(tmp_path):
     presets.save_preset("empty", [], tmp_path)
     presets.save_preset("x", ["Other"], tmp_path)
-    raw = presets.presets_path(tmp_path).read_bytes()
+    raw = state.state_path(tmp_path).read_bytes()
 
     assert presets.remove_preset_paths(["Old"], tmp_path) == 0
 
     assert presets.load_presets(tmp_path) == {"empty": [], "x": ["Other"]}
-    assert presets.presets_path(tmp_path).read_bytes() == raw
+    assert state.state_path(tmp_path).read_bytes() == raw

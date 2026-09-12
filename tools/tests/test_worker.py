@@ -11,7 +11,7 @@ import pytest
 # noinspection PyPackageRequirements
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
-from tools import importer, presets
+from tools import importer, presets, promoted, state
 from tools.backups import store_folder_for_mod
 from tools.blend_remap import blend_state_path
 from tools.fixer import FixerData
@@ -20,6 +20,7 @@ from tools.ui.worker import (
     delete_folder_worker,
     import_archive_worker,
     load_all_data_worker,
+    rename_folder_worker,
     update_data_worker,
 )
 
@@ -220,18 +221,18 @@ def delete_setup(
     mods.mkdir()
     presets_dir.mkdir()
     monkeypatch.setattr("tools.ui.worker.default_backups_dir", lambda: store)
-    monkeypatch.setattr("tools.presets.project_root", lambda: presets_dir)
+    monkeypatch.setattr("tools.state.project_root", lambda: presets_dir)
     for name, entries in preset_paths.items():
         presets.save_preset(name, entries, presets_dir)
     if markers is not None:
         state_path = blend_state_path(store, mods)
         state_path.parent.mkdir(parents=True)
         state_path.write_text(json.dumps(markers), encoding="utf-8")
-    return mods, store
+    return mods, store, presets_dir
 
 
 def test_delete_folder_worker_mod_deletes_folder_and_followups(tmp_path, monkeypatch):
-    mods, store = delete_setup(
+    mods, store, presets_dir = delete_setup(
         monkeypatch,
         tmp_path,
         {"p1": ["Cat/OldMod", "Other"], "p2": ["Cat/OldMod"]},
@@ -260,7 +261,7 @@ def test_delete_folder_worker_mod_deletes_folder_and_followups(tmp_path, monkeyp
     assert file_count == 1
     assert not mod.exists()
     # p2 loses its last entry, so the prune-on-empty rule removes it entirely.
-    assert presets.load_presets() == {"p1": ["Other"]}
+    assert presets.load_presets(presets_dir) == {"p1": ["Other"]}
     assert not mirror.exists()
     assert json.loads(blend_state_path(store, mods).read_text(encoding="utf-8")) == {
         "Other/keep.buf": {"hash": "11223344", "stamp": 2}
@@ -274,7 +275,7 @@ def test_delete_folder_worker_mod_deletes_folder_and_followups(tmp_path, monkeyp
 def test_delete_folder_worker_category_deletes_subtree_and_followups(
     tmp_path, monkeypatch
 ):
-    mods, store = delete_setup(
+    mods, store, presets_dir = delete_setup(
         monkeypatch,
         tmp_path,
         {"p1": ["Cat/M1", "Cat/M2", "Other"]},
@@ -304,7 +305,7 @@ def test_delete_folder_worker_category_deletes_subtree_and_followups(
     assert deleted == cat
     assert file_count == 2
     assert not cat.exists()
-    assert presets.load_presets() == {"p1": ["Other"]}
+    assert presets.load_presets(presets_dir) == {"p1": ["Other"]}
     assert not store_folder_for_mod(store, mods, cat).exists()
     assert json.loads(blend_state_path(store, mods).read_text(encoding="utf-8")) == {
         "Other/keep.buf": {"hash": "11223344", "stamp": 2}
@@ -316,7 +317,9 @@ def test_delete_folder_worker_category_deletes_subtree_and_followups(
 
 
 def test_delete_folder_worker_prunes_emptied_preset(tmp_path, monkeypatch):
-    mods, store = delete_setup(monkeypatch, tmp_path, {"solo": ["Cat/OldMod"]})
+    mods, store, presets_dir = delete_setup(
+        monkeypatch, tmp_path, {"solo": ["Cat/OldMod"]}
+    )
     mod = mods / "Cat" / "OldMod"
     mod.mkdir(parents=True)
     (mod / "a.ini").write_text("ini", encoding="utf-8")
@@ -327,5 +330,44 @@ def test_delete_folder_worker_prunes_emptied_preset(tmp_path, monkeypatch):
     holder = run_worker(delete_folder_worker(mods, mod, "mod"))
 
     assert holder["error"] is None
-    assert presets.load_presets() == {}
-    assert "solo" not in presets.presets_path().read_text(encoding="utf-8")
+    assert presets.load_presets(presets_dir) == {}
+    assert "solo" not in state.state_path(presets_dir).read_text(encoding="utf-8")
+
+
+def test_rename_folder_worker_retargets_promoted_key(tmp_path, monkeypatch):
+    mods, store, presets_dir = delete_setup(monkeypatch, tmp_path, {"p1": ["Cat/Old"]})
+    mod = mods / "Cat" / "Old"
+    mod.mkdir(parents=True)
+    (mod / "preview.jpg").write_text("img", encoding="utf-8")
+    promoted.save_promoted({"Cat/Old": "preview.jpg"}, presets_dir)
+
+    worker = rename_folder_worker(mods, mod, "New", "mod")
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    assert holder["result"] == mods / "Cat" / "New"
+    assert promoted.load_promoted(presets_dir) == {"Cat/New": "preview.jpg"}
+    assert any("Preview images updated" in message for message in logs)
+
+
+def test_delete_folder_worker_removes_promoted_key(tmp_path, monkeypatch):
+    mods, store, presets_dir = delete_setup(
+        monkeypatch, tmp_path, {"p1": ["Cat/OldMod"]}
+    )
+    mod = mods / "Cat" / "OldMod"
+    mod.mkdir(parents=True)
+    (mod / "preview.jpg").write_text("img", encoding="utf-8")
+    promoted.save_promoted(
+        {"Cat/OldMod": "preview.jpg", "Stays": "keep.png"}, presets_dir
+    )
+
+    worker = delete_folder_worker(mods, mod, "mod")
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    assert promoted.load_promoted(presets_dir) == {"Stays": "keep.png"}
+    assert any("Preview images removed" in message for message in logs)
