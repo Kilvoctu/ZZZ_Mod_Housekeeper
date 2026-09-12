@@ -1,0 +1,155 @@
+"""Named snapshots of enabled mods, stored as JSON.
+
+A preset maps a name to the relative posix paths of the mod folders it
+considers enabled; the GUI later applies one by toggling those folders.
+"""
+
+import json
+from collections.abc import Iterable
+from pathlib import Path
+
+from .mods import ModNode
+from .repo import project_root
+
+_JSON_NAME = "presets.json"
+_DISABLED_PREFIX = "DISABLED_"
+
+
+def presets_path(root: Path | None = None) -> Path:
+    """JSON file holding the presets, directly under the mods root."""
+    return Path(root if root is not None else project_root()) / _JSON_NAME
+
+
+def load_presets(root: Path | None = None) -> dict[str, list[str]]:
+    """Read {name: sorted enabled paths}; {} on missing, undecodable or non-dict JSON."""
+    try:
+        raw = json.loads(presets_path(root).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    presets: dict[str, list[str]] = {}
+    for name, value in raw.items():
+        if isinstance(name, str) and isinstance(value, list):
+            presets[name] = sorted(entry for entry in value if isinstance(entry, str))
+    return presets
+
+
+def save_preset(
+    name: str, enabled_relative: Iterable[str], root: Path | None = None
+) -> None:
+    """Store name.strip() -> sorted de-duplicated enabled paths, overwriting."""
+    stripped = name.strip()
+    if not stripped:
+        raise ValueError(f"preset name is blank: {name!r}")
+    presets = load_presets(root)
+    presets[stripped] = sorted({path for path in enabled_relative})
+    _write(presets, root)
+
+
+def delete_preset(name: str, root: Path | None = None) -> bool:
+    """Remove one preset; True when it existed."""
+    stripped = name.strip()
+    presets = load_presets(root)
+    if stripped not in presets:
+        return False
+    del presets[stripped]
+    _write(presets, root)
+    return True
+
+
+def rename_preset(old: str, new: str, root: Path | None = None) -> bool:
+    """Rename one preset; False when old is missing, new is blank or taken."""
+    stripped_old = old.strip()
+    stripped_new = new.strip()
+    if not stripped_new:
+        return False
+    presets = load_presets(root)
+    if stripped_old not in presets or stripped_new in presets:
+        return False
+    presets[stripped_new] = presets.pop(stripped_old)
+    _write(presets, root)
+    return True
+
+
+def preset_names(root: Path | None = None) -> list[str]:
+    """Sorted preset names."""
+    return sorted(load_presets(root))
+
+
+def _clean_disabled_leaf(relative: str) -> str:
+    """Strip a leading DISABLED_ prefix from the last path component."""
+    slash = relative.rfind("/")
+    if slash >= 0:
+        head, leaf = relative[: slash + 1], relative[slash + 1 :]
+        if leaf.startswith(_DISABLED_PREFIX):
+            return head + leaf[len(_DISABLED_PREFIX) :]
+        return relative
+    if relative.startswith(_DISABLED_PREFIX):
+        return relative[len(_DISABLED_PREFIX) :]
+    return relative
+
+
+def _node_relative(node: ModNode, root: Path) -> str:
+    """Relative posix path of a mod node with its DISABLED_ leaf prefix stripped."""
+    try:
+        relative = node.path.relative_to(root).as_posix()
+    except ValueError:
+        relative = node.path.as_posix()
+    return _clean_disabled_leaf(relative)
+
+
+def preset_changes(
+    tree: ModNode, root: Path, enabled_relative: frozenset[str]
+) -> list[tuple[ModNode, bool]]:
+    """(node, desired) pairs for mod nodes the preset toggles, depth-first.
+
+    Paths outside root fall back to their absolute posix form.
+    """
+    changes: list[tuple[ModNode, bool]] = []
+    for node in _walk(tree):
+        if node.kind != "mod":
+            continue
+        relative = _node_relative(node, root)
+        desired = relative in enabled_relative
+        if desired != (not node.disabled):
+            changes.append((node, desired))
+    return changes
+
+
+def missing_preset_paths(
+    tree: ModNode, root: Path, enabled_relative: frozenset[str]
+) -> list[str]:
+    """Sorted preset paths no mod node in the tree matches."""
+    present: set[str] = set()
+    for node in _walk(tree):
+        if node.kind != "mod":
+            continue
+        present.add(_node_relative(node, root))
+    return sorted(enabled_relative - present)
+
+
+def enabled_relative_paths(tree: ModNode, root: Path) -> frozenset[str]:
+    """Enabled mod relative posix paths, depth-first, matching preset storage."""
+    enabled: set[str] = set()
+    for node in _walk(tree):
+        if node.kind != "mod":
+            continue
+        relative = _node_relative(node, root)
+        if not node.disabled:
+            enabled.add(relative)
+    return frozenset(enabled)
+
+
+def _walk(node: ModNode) -> Iterable[ModNode]:
+    """Depth-first walk: the node then its children in order."""
+    yield node
+    for child in node.children:
+        yield from _walk(child)
+
+
+def _write(presets: dict[str, list[str]], root: Path | None) -> None:
+    """Serialize presets with indent 2, sorted keys and a trailing newline."""
+    presets_path(root).write_text(
+        json.dumps(presets, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
