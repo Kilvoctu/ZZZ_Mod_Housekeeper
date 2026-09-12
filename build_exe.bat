@@ -51,20 +51,20 @@ if errorlevel 1 (
 
 call :trim_pyside6
 
-echo == Building ZZZHashFix.exe ==
-"%VPYTHON%" -m PyInstaller --noconfirm --clean ZZZHashFix.spec
+echo == Building ZZZModKeeper.exe ==
+"%VPYTHON%" -m PyInstaller --noconfirm --clean ZZZModKeeper.spec
 if errorlevel 1 (
     echo [ERROR] PyInstaller build failed.
     exit /b 1
 )
 
-if not exist "dist\ZZZHashFix.exe" (
-    echo [ERROR] Build did not produce dist\ZZZHashFix.exe
+if not exist "dist\ZZZModKeeper.exe" (
+    echo [ERROR] Build did not produce dist\ZZZModKeeper.exe
     exit /b 1
 )
 
 echo == Copying to project root... ==
-copy /Y "dist\ZZZHashFix.exe" "ZZZHashFix.exe" >nul
+copy /Y "dist\ZZZModKeeper.exe" "ZZZModKeeper.exe" >nul
 if errorlevel 1 (
     echo [ERROR] Copy to project root failed.
     exit /b 1
@@ -75,7 +75,7 @@ if exist dist rmdir /s /q dist
 if exist build rmdir /s /q build
 if exist __pycache__ rmdir /s /q __pycache__
 
-echo Done. ZZZHashFix.exe rebuilt at project root.
+echo Done. ZZZModKeeper.exe rebuilt at project root.
 exit /b 0
 
 :trim_pyside6

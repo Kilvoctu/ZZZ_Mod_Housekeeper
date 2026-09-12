@@ -1,4 +1,4 @@
-"""Background task workers for the ZZZ Hash Fixer GUI.
+"""Background task workers for the ZZZ Mod Housekeeper GUI.
 
 ``TaskWorker`` runs a plain function on a ``QThread`` so the GUI never blocks;
 thin factory helpers prebind the engine calls the main window needs.
@@ -61,7 +61,7 @@ def friendly_error(exc: BaseException) -> str:
     detail = str(exc)
     if isinstance(exc, OSError) and ("base_library.zip" in detail or "_MEI" in detail):
         return (
-            "ZZZHashFix's runtime files were cleaned from the temp folder while "
+            "ZZZModKeeper's runtime files were cleaned from the temp folder while "
             "running - close the app and relaunch it"
         )
     return message

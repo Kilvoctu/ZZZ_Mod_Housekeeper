@@ -21,7 +21,7 @@ LOWVARM_CHARACTERS_DIR_NAME = "角色hash表低显"
 
 _TIMEOUT_SECONDS = 300
 _MARKER_NAME = ".zzzhashfix.json"
-_USER_AGENT = "ZZZHashFix/1.0"
+_USER_AGENT = "ZZZModKeeper/1.0"
 
 
 class RepoError(RuntimeError):
