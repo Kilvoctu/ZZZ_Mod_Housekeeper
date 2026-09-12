@@ -438,32 +438,35 @@ def _expanded_path_list(raw: object) -> list[str]:
 class StateSettings:
     """QSettings drop-in backed by the consolidated state.json "settings" section.
 
-    The section is loaded once at construction; every setValue mutates it and
-    persists the whole state immediately (settings traffic is low-frequency,
-    so this matches the old sync-on-write behavior).
+    Every value()/setValue() re-reads state.json and writes a fresh snapshot,
+    so concurrent presets/promoted saves and the other StateSettings
+    instances' own writes are never clobbered by a stale in-memory copy.
+    Settings traffic is low-frequency (dialog open/close), so the tiny reload
+    is cheap.  value() falls back to the given default for missing keys;
+    JSON-encodable scalars and str/list/dict values are stored verbatim.
     """
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = Path(root) if root is not None else project_root()
-        self._state = load_state(self._root)
 
     def value(self, key: str, default: object = None) -> object:
         """QSettings-style read: the stored value, or the default when absent."""
-        section = self._state.get("settings")
+        section = load_state(self._root).get("settings")
         if not isinstance(section, dict):
             return default
         return section.get(key, default)
 
     # noinspection PyPep8Naming
     def setValue(self, key: str, value: object) -> None:
-        """QSettings-style write: update the section and persist immediately."""
-        section = self._state.get("settings")
+        """QSettings-style write: merge the key into a fresh state and save it."""
+        state = load_state(self._root)
+        section = state.get("settings")
         if not isinstance(section, dict):
             section = {}
-            self._state["settings"] = section
+            state["settings"] = section
         section[key] = value
         try:
-            save_state(self._state, self._root)
+            save_state(state, self._root)
         except OSError:
             pass
 
@@ -737,6 +740,15 @@ def _unique_destination(folder: Path, name: str) -> Path:
         candidate = folder / f"{stem} ({counter}){suffix}"
         counter += 1
     return candidate
+
+
+def _process_elevated() -> bool:
+    """Whether this process is running with administrator privileges."""
+    try:
+        is_user_an_admin = getattr(ctypes.windll.shell32, "IsUserAnAdmin")
+        return bool(is_user_an_admin())
+    except (AttributeError, OSError):
+        return False
 
 
 def _save_jpeg(image: QImage, destination: Path) -> bool:
@@ -1232,15 +1244,27 @@ class _PreviewGallery(QDialog):
         self._image_label.set_source_pixmap(pixmap)
 
     def _on_list_context_menu(self, position: QPoint) -> None:
-        """Offer to delete the image under the right-clicked thumbnail."""
+        """Offer preview promotion and deletion for the right-clicked thumbnail."""
         item = self._list.itemAt(position)
         if item is None:
             return
+        image = Path(str(item.data(Qt.ItemDataRole.UserRole)))
         menu = QMenu(self)
+        menu.addAction("Set as preview image")
+        # Reset only applies to the promoted image itself.
+        if image.name == self._promoted_name:
+            menu.addAction("Reset preview image")
+        menu.addSeparator()
         menu.addAction("Delete image")
-        chosen = menu.exec(self._list.mapToGlobal(position))
-        if chosen is not None and chosen.text() == "Delete image":
-            self._delete_image(Path(str(item.data(Qt.ItemDataRole.UserRole))))
+        chosen: QAction | None = menu.exec(self._list.mapToGlobal(position))
+        if chosen is None:
+            return
+        if chosen.text() == "Set as preview image":
+            self._promote_current(image)
+        elif chosen.text() == "Reset preview image":
+            self._promote_current(None)
+        elif chosen.text() == "Delete image":
+            self._delete_image(image)
 
     def _on_image_context_menu(self, position: QPoint) -> None:
         """Offer preview promotion and deletion for the image shown in the large preview."""
@@ -2003,7 +2027,11 @@ class _ModsTree(QTreeWidget):
         return super().eventFilter(obj, event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
-        self._accept_or_ignore(event)
+        """Accept any single-archive drag; dragMoveEvent gates the destination."""
+        if self._drop_archive(event.mimeData()) is not None:
+            event.acceptProposedAction()
+        else:
+            event.ignore()
         self._update_drop_visuals(event)
 
     def dragMoveEvent(self, event: QDragMoveEvent) -> None:
@@ -2253,6 +2281,11 @@ class MainWindow(QMainWindow):
             self._on_load_data()
         else:
             self._check_hash_updates()
+        elevated = _process_elevated()
+        self.append_log(
+            "Running elevated: "
+            + ("yes (Explorer drag-and-drop will be blocked by Windows)" if elevated else "no")
+        )
 
     def _build_ui(self) -> None:
         central = QWidget(self)
@@ -2716,16 +2749,19 @@ class MainWindow(QMainWindow):
         renamed or deleted never prompt.
         """
         new_mods_path = Path(self._mods_edit.text().strip())
-        if (
-            previous_root is None
-            or previous_mods_path is None
-            or self._root_node is None
-            or previous_mods_path != new_mods_path
-        ):
+        if previous_root is None:
+            return
+        if previous_mods_path is None:
+            return
+        root_node = self._root_node
+        if root_node is None:
+            return
+        previous_mods = previous_mods_path
+        if previous_mods != new_mods_path:
             return
         stale = _stale_mod_refs(
-            mod_relative_paths(previous_root, previous_mods_path),
-            mod_relative_paths(self._root_node, new_mods_path),
+            mod_relative_paths(previous_root, previous_mods),
+            mod_relative_paths(root_node, new_mods_path),
             self._promoted,
             load_presets(),
             self._missing_dismissed | self._expected_removals,

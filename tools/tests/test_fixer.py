@@ -2126,10 +2126,6 @@ def write_remap_ini(tmp_path, anchor, values, chars="ABCD"):
     return dst
 
 
-def remap_line_numbers(values):
-    """(hash line, match_first_index line) per section, blank line between sections."""
-    return [(2 + 4 * index, 3 + 4 * index) for index in range(len(values))]
-
 
 def test_index_remap_letter_pairing(tmp_path):
     data = remap_data(remap_db([belle_component()]))

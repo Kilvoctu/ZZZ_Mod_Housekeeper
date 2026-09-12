@@ -7,7 +7,6 @@ against Path.read_text(encoding="utf-8") of the original.
 from pathlib import Path
 
 from tools import repo
-from tools.model import ChangeEntry
 
 SNAPSHOT_CHANGELOG = """===============================================================================
   版本 3.1 -> 3.11
@@ -548,13 +547,3 @@ def make_repo(root: Path, changelog_text: str = SNAPSHOT_CHANGELOG, subdir: str 
     (base / repo.CHARACTERS_DIR_NAME).mkdir(parents=True)
     (base / repo.CHANGELOG_NAME).write_text(changelog_text, encoding="utf-8")
     return base
-
-
-LEGACY_ENTRY = ChangeEntry(
-    from_hash="aaaa0000",
-    to_hash="bbbb0000",
-    characters=["zhuyuan"],
-    role="legacy",
-    version_label="1.0 -> 1.2",
-    version_index=1,
-)

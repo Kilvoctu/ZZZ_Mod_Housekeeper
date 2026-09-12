@@ -40,6 +40,7 @@ This app is built mainly for personal use.
 
 - Can't guarantee it'll fix every mod.
 - Don't include any loose file in a category folder; category may falsely be identified as a mod.
+- Drag and drop doesn't work when running app elevated; just run it normal.
 - Missing various stuff that I haven't felt like adding.
 - Jank.
 
