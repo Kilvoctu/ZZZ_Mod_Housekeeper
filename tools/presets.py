@@ -129,6 +129,76 @@ def missing_preset_paths(
     return sorted(enabled_relative - present)
 
 
+def retarget_preset_paths(
+    swaps: Iterable[tuple[str, str]], root: Path | None = None
+) -> int:
+    """Rewrite stored entries for renamed folders; returns the changed count.
+
+    Entries equal to an old path or under it swap that prefix for the new one; mod renames match exactly, category renames cover nested entries.
+    """
+    valid: list[tuple[str, str]] = []
+    for old, new in swaps:
+        stripped_old = old.strip()
+        stripped_new = new.strip()
+        if stripped_old and stripped_old != stripped_new:
+            valid.append((stripped_old, stripped_new))
+    if not valid:
+        return 0
+    presets = load_presets(root)
+    changed = 0
+    for name, entries in presets.items():
+        rewritten: list[str] = []
+        dirty = False
+        for entry in entries:
+            replacement = entry
+            for old, new in valid:
+                if entry == old:
+                    replacement = new
+                    break
+                if entry.startswith(old + "/"):
+                    replacement = new + entry[len(old) :]
+                    break
+            if replacement != entry:
+                changed += 1
+                dirty = True
+            rewritten.append(replacement)
+        if dirty:
+            presets[name] = sorted(set(rewritten))
+    if changed:
+        _write(presets, root)
+    return changed
+
+
+def remove_preset_paths(paths: Iterable[str], root: Path | None = None) -> int:
+    """Remove stored entries for deleted mods or categories; returns the removed count.
+
+    A stored entry is removed when it equals one of the given paths or under it; exact matches cover mod deletions, prefix matches cover nested entries in category deletions. Presets that lose their last entry through this removal are deleted; presets that were already empty are kept.
+    """
+    old_paths = [path.strip() for path in paths if path.strip()]
+    if not old_paths:
+        return 0
+    presets = load_presets(root)
+    removed = 0
+    emptied: list[str] = []
+    for name, entries in presets.items():
+        kept: list[str] = []
+        for entry in entries:
+            if any(entry == old or entry.startswith(old + "/") for old in old_paths):
+                removed += 1
+            else:
+                kept.append(entry)
+        if len(kept) != len(entries):
+            if kept:
+                presets[name] = kept
+            else:
+                emptied.append(name)
+    for name in emptied:
+        del presets[name]
+    if removed:
+        _write(presets, root)
+    return removed
+
+
 def enabled_relative_paths(tree: ModNode, root: Path) -> frozenset[str]:
     """Enabled mod relative posix paths, depth-first, matching preset storage."""
     enabled: set[str] = set()

@@ -72,12 +72,29 @@ def set_mod_enabled(path: Path, enabled: bool) -> Path:
     return target
 
 
-def create_mod_folder(mods_dir: Path, name: str) -> Path:
-    """Create a new empty folder directly under mods_dir and return it.
+def rename_mod_folder(path: Path, new_name: str) -> Path:
+    """Rename a mod or category folder, keeping its DISABLED_ prefix; typed DISABLED_ names are rejected.
 
-    Surrounding whitespace is stripped; raises ValueError for blank names,
-    invalid Windows filename characters, a trailing dot, or duplicates.
+    Unchanged display names are a no-op; case-only renames are allowed; a real collision raises FileExistsError.
     """
+    cleaned = validate_folder_name(new_name)
+    if cleaned.startswith(_DISABLED_PREFIX):
+        raise ValueError(
+            "Rename to a DISABLED_ name is ambiguous; use enable/disable instead"
+        )
+    disabled = path.name.startswith(_DISABLED_PREFIX)
+    current_display = path.name.removeprefix(_DISABLED_PREFIX)
+    if cleaned == current_display:
+        return path
+    target = path.parent / ((_DISABLED_PREFIX + cleaned) if disabled else cleaned)
+    if target.exists() and path.name.lower() != target.name.lower():
+        raise FileExistsError(f"target already exists: {target}")
+    path.rename(target)
+    return target
+
+
+def validate_folder_name(name: str) -> str:
+    """Cleaned folder name; rejects blank names, \\/:*?"<>| and trailing dot/space."""
     cleaned = name.strip()
     if not cleaned:
         raise ValueError("Folder name is empty")
@@ -85,6 +102,16 @@ def create_mod_folder(mods_dir: Path, name: str) -> Path:
         raise ValueError(f"Folder name contains invalid characters: {cleaned}")
     if cleaned.endswith(".") or cleaned.endswith(" "):
         raise ValueError(f"Folder name must not end with a dot or space: {cleaned}")
+    return cleaned
+
+
+def create_mod_folder(mods_dir: Path, name: str) -> Path:
+    """Create a new empty folder directly under mods_dir and return it.
+
+    Surrounding whitespace is stripped; raises ValueError for blank names,
+    invalid Windows filename characters, a trailing dot, or duplicates.
+    """
+    cleaned = validate_folder_name(name)
     target = Path(mods_dir) / cleaned
     if target.exists():
         raise ValueError(f"A folder named '{cleaned}' already exists")

@@ -102,9 +102,11 @@ from .worker import (
     apply_preset_worker,
     backup_chains_worker,
     check_updates_worker,
+    delete_folder_worker,
     fix_mod_worker,
     import_archive_worker,
     load_all_data_worker,
+    rename_folder_worker,
     revert_worker,
     update_data_worker,
 )
@@ -882,6 +884,7 @@ class MainWindow(QMainWindow):
         self._log_last_message: str | None = None
         self._pending_analyzing_log: str | None = None
         self._last_analysis_line: str | None = None
+        self._renaming_node: ModNode | None = None
 
         self.setWindowTitle("ZZZ Mod Housekeeper")
         self._settings = QSettings(
@@ -1194,10 +1197,12 @@ class MainWindow(QMainWindow):
         buttons.addWidget(install)
         buttons.addWidget(cancel)
         layout.addLayout(buttons)
+        self._restore_edge_cursor()
         return dialog.exec() == QDialog.DialogCode.Accepted
 
     def handle_archive_drop(self, archive: Path, node: ModNode | None) -> None:
         """Confirm and install a dropped archive into a category or the root."""
+        self._restore_edge_cursor()
         self.raise_()
         self.activateWindow()
         if self._worker is not None:
@@ -1472,6 +1477,7 @@ class MainWindow(QMainWindow):
         return [node.path] if node.kind == "file" else node.path
 
     def _confirm(self, title: str, text: str) -> bool:
+        self._restore_edge_cursor()
         answer = QMessageBox.question(
             self,
             title,
@@ -1546,6 +1552,18 @@ class MainWindow(QMainWindow):
         while stack:
             current = stack.pop()
             if current.kind == "file":
+                count += 1
+            stack.extend(current.children)
+        return count
+
+    @staticmethod
+    def _count_mods(node: ModNode) -> int:
+        """Number of mod nodes in node's subtree, including node itself."""
+        count = 0
+        stack = [node]
+        while stack:
+            current = stack.pop()
+            if current.kind == "mod":
                 count += 1
             stack.extend(current.children)
         return count
@@ -1789,6 +1807,7 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
         open_folder = menu.addAction("Open mods folder")
         create_folder = menu.addAction("Create new folder…")
+        self._restore_edge_cursor()
         chosen = menu.exec(self._tree.viewport().mapToGlobal(position))
         if chosen is open_folder:
             self._open_mods_folder()
@@ -1816,33 +1835,141 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(0, self._start_analyze)
 
     def _on_tree_context_menu(self, position: QPoint) -> None:
-        """Right-click menu on a mod row: folder, backup folder, info or previews."""
+        """Right-click menu on a mod or category row: folder, rename, info or previews."""
         item = self._tree.itemAt(position)
         if item is None:
             self._show_root_context_menu(position)
             return
         data = item.data(0, Qt.ItemDataRole.UserRole)
-        if not isinstance(data, ModNode) or data.kind != "mod":
+        if not isinstance(data, ModNode) or data.kind not in ("mod", "category"):
             return
         menu = QMenu(self)
-        open_mod = menu.addAction("Open mod folder")
-        open_backup = menu.addAction("Open backup folder")
-        info = menu.addAction("Mod info…")
-        preview = menu.addAction("Preview images…")
-        chosen = menu.exec(self._tree.viewport().mapToGlobal(position))
-        if chosen is open_mod:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(data.path)))
-        elif chosen is open_backup:
-            target = store_folder_to_open(
-                default_backups_dir(),
-                Path(self._mods_edit.text().strip()),
-                data.path,
+        if data.kind == "mod":
+            open_mod = menu.addAction("Open mod folder")
+            open_backup = menu.addAction("Open backup folder")
+            rename = menu.addAction("Rename…")
+            delete = menu.addAction("Delete…")
+            info = menu.addAction("Mod info…")
+            preview = menu.addAction("Preview images…")
+            self._restore_edge_cursor()
+            chosen = menu.exec(self._tree.viewport().mapToGlobal(position))
+            if chosen is open_mod:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(data.path)))
+            elif chosen is open_backup:
+                target = store_folder_to_open(
+                    default_backups_dir(),
+                    Path(self._mods_edit.text().strip()),
+                    data.path,
+                )
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+            elif chosen is rename:
+                self._on_rename_mod(data)
+            elif chosen is delete:
+                self._on_delete_mod(data)
+            elif chosen is info:
+                self._show_mod_info(data)
+            elif chosen is preview:
+                self._show_preview_gallery(data)
+        else:
+            open_folder = menu.addAction("Open folder")
+            rename = menu.addAction("Rename…")
+            delete = menu.addAction("Delete…")
+            self._restore_edge_cursor()
+            chosen = menu.exec(self._tree.viewport().mapToGlobal(position))
+            if chosen is open_folder:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(str(data.path)))
+            elif chosen is rename:
+                self._on_rename_mod(data)
+            elif chosen is delete:
+                self._on_delete_mod(data)
+
+    def _on_rename_mod(self, node: ModNode) -> None:
+        """Prompt for a new display name and rename the folder in the background."""
+        if self._worker is not None:
+            self.append_log("Busy — try again when the current task finishes.")
+            return
+        mods_dir = Path(self._mods_edit.text().strip())
+        if not mods_dir.is_dir():
+            self.append_log("Load the mods folder before renaming")
+            return
+        name, ok = QInputDialog.getText(
+            self,
+            "Rename",
+            f"New name for '{_display_name(node)}':",
+            text=_display_name(node),
+        )
+        if not ok:
+            return
+        self._renaming_node = node
+        self._start_worker(
+            rename_folder_worker(mods_dir, node.path, name, node.kind),
+            self._on_rename_done,
+        )
+
+    def _on_rename_done(self, result: object) -> None:
+        """Apply a finished rename to the tree node, item and subtree paths."""
+        node = self._renaming_node
+        self._renaming_node = None
+        if not isinstance(result, Path) or node is None:
+            return
+        node.name = result.name
+        node.disabled = node.name.startswith(_DISABLED_PREFIX)
+        retarget_subtree_paths(node, result)
+        item = self._node_items.get(id(node))
+        if item is not None:
+            item.setText(0, _display_name(node))
+        self._fixing_node = node
+        if self._selected_node is node:
+            self._update_mod_label(node)
+        QTimer.singleShot(0, self._deferred_scope_refresh)
+
+    def _on_delete_mod(self, node: ModNode) -> None:
+        """Confirm and delete a mod or category folder and its tracked state."""
+        if self._worker is not None:
+            self.append_log("Busy — try again when the current task finishes.")
+            return
+        mods_dir = Path(self._mods_edit.text().strip())
+        if not mods_dir.is_dir():
+            self.append_log("Load the mods folder before deleting")
+            return
+        display = _display_name(node)
+        if node.kind == "mod":
+            text = (
+                f"Delete '{display}' permanently?\n"
+                f"{self._count_files(node)} .ini file(s) will be removed, "
+                "including its fix-backup history."
             )
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
-        elif chosen is info:
-            self._show_mod_info(data)
-        elif chosen is preview:
-            self._show_preview_gallery(data)
+        else:
+            mods_inside = self._count_mods(node)
+            if mods_inside:
+                text = (
+                    f"Delete category '{display}' permanently?\n"
+                    f"It contains {mods_inside} mod(s); they and their "
+                    "fix-backup histories will be removed."
+                )
+            else:
+                text = f"Delete empty category '{display}' permanently?"
+        if not self._confirm("Delete", text):
+            self.append_log("Delete cancelled")
+            return
+        self._start_worker(
+            delete_folder_worker(mods_dir, node.path, node.kind),
+            self._on_delete_done,
+        )
+
+    def _on_delete_done(self, result: object) -> None:
+        """Rescan the mods overview after a finished folder deletion."""
+        if not isinstance(result, tuple) or len(result) != 2:
+            return
+        deleted, _file_count = result
+        if not isinstance(deleted, Path):
+            return
+        if self._selected_node is not None and self._selected_node.path == deleted:
+            self._selected_node = None
+            self._refresh_mod_actions()
+            self._update_mod_label(None)
+        self._fixing_node = None
+        QTimer.singleShot(0, self._start_analyze)
 
     def _show_mod_info(self, node: ModNode) -> None:
         """Open the read-only mod info summary dialog for one mod."""

@@ -112,6 +112,37 @@ def store_folder_to_open(store_dir: Path, mods_dir: Path, mod_path: Path) -> Pat
     return Path(mods_dir)
 
 
+def retarget_store_folder(
+    store_dir: Path, mods_dir: Path, old_rel: Path, new_rel: Path
+) -> bool:
+    """Move the canonical store mirror folder for a renamed folder; True when moved.
+
+    Relative paths are canonicalized like store keys; False when the source is absent, the target exists, or both paths coincide.
+    """
+    old_store = store_root(store_dir, mods_dir).joinpath(
+        *_canonical_dirs(Path(old_rel).parts)
+    )
+    new_store = store_root(store_dir, mods_dir).joinpath(
+        *_canonical_dirs(Path(new_rel).parts)
+    )
+    if old_store == new_store or not old_store.is_dir() or new_store.exists():
+        return False
+    new_store.parent.mkdir(parents=True, exist_ok=True)
+    old_store.rename(new_store)
+    return True
+
+
+def delete_store_folder(store_dir: Path, mods_dir: Path, rel: Path) -> bool:
+    """Delete the canonical store mirror folder for a removed mod or category."""
+    mirror = store_root(store_dir, mods_dir).joinpath(
+        *_canonical_dirs(Path(rel).parts)
+    )
+    if not mirror.is_dir():
+        return False
+    shutil.rmtree(mirror)
+    return True
+
+
 _DISABLED_TOGGLE = "DISABLED_"
 
 

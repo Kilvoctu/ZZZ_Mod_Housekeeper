@@ -20,6 +20,8 @@ This app is built mainly for personal use, as I wanted per-mod operations.
 - Mod management features:
   - Install mod archives via menu or drag and drop (zip; rar/7z when 7-zip or WinRAR is installed).
   - Enable/disable mods (via the `DISABLED_` prefix).
+  - Top-level folder creation.
+  - Renaming and deleting folders/mods.
   - Mod preset loadout management.
   - Context menu for mod info (author, toggles) and images, if any.
 
@@ -28,7 +30,7 @@ This app is built mainly for personal use, as I wanted per-mod operations.
 1. Download/clone this repo.
 2. Run `build_exe.bat` and wait.
 3. Run `ZZZModKeeper.exe`.
-4. Optional: click **Update hashes** (needs internet for the first download) to enable the fix features; mod management works without hash data.  
+4. Optional: click **Update hashes** to enable the fix features (needs internet for the first download); mod management works without hash data.  
 *Alternatively, download hash data from sources below and drop into `data/`.
 5. Browse to your mod folder.
 6. Hopefully the rest is self-explanatory.
@@ -36,8 +38,7 @@ This app is built mainly for personal use, as I wanted per-mod operations.
 ## Known Issues
 
 - Can't guarantee it'll fix every mod.
-- No rename, delete, or similar file operations.
-- Other things I haven't added.
+- Various stuff that I haven't felt like adding.
 - Jank.
 
 ## Credits & license

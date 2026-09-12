@@ -286,3 +286,57 @@ def apply_remap(
         return True
     log(f"blend indices already current: {target.path.name} ({target.hash})")
     return False
+
+
+def rewrite_blend_state_keys(
+    store_dir: Path, mods_dir: Path, old_prefix: str, new_prefix: str
+) -> int:
+    """Rewrite applied-remap marker keys after a folder rename; returns the count changed.
+
+    Keys equal to old_prefix or under it swap that prefix; no-op without a marker file; a rewritten key overwrites a colliding existing key.
+    """
+    state = load_blend_state(store_dir, mods_dir)
+    if not state or not old_prefix or old_prefix == new_prefix:
+        return 0
+    rewritten = dict(state)
+    changed = 0
+    for key, marker in state.items():
+        if key == old_prefix:
+            new_key = new_prefix
+        elif key.startswith(old_prefix + "/"):
+            new_key = new_prefix + key[len(old_prefix) :]
+        else:
+            continue
+        del rewritten[key]
+        rewritten[new_key] = marker
+        changed += 1
+    if changed:
+        state_path = blend_state_path(store_dir, mods_dir)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps(rewritten, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    return changed
+
+
+def remove_blend_state_keys(store_dir: Path, mods_dir: Path, prefix: str) -> int:
+    """Remove applied-remap marker keys under a deleted folder; returns count removed."""
+    state = load_blend_state(store_dir, mods_dir)
+    if not state or not prefix:
+        return 0
+    kept: dict[str, dict] = {}
+    removed = 0
+    for key, marker in state.items():
+        if key == prefix or key.startswith(prefix + "/"):
+            removed += 1
+        else:
+            kept[key] = marker
+    if removed:
+        state_path = blend_state_path(store_dir, mods_dir)
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        state_path.write_text(
+            json.dumps(kept, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+    return removed
