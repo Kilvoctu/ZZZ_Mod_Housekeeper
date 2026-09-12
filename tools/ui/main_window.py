@@ -77,7 +77,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..backups import BackupChain, default_backups_dir, store_folder_to_open
-from ..fixer import STRUCTURAL_KINDS, FixerData
+from ..fixer import STRUCTURAL_KINDS, FixerData, empty_fixer_data
 from ..mods import (
     AnalysisSummary,
     CURRENT_SIGNAL,
@@ -93,7 +93,7 @@ from ..mods import (
 )
 from ..modinfo import read_mod_author, scan_mod_info
 from ..presets import (delete_preset, enabled_relative_paths, load_presets, missing_preset_paths, preset_changes, preset_names, rename_preset, save_preset)
-from ..repo import REPO_VARIANTS, changelog_path, default_cache_dir, project_root
+from ..repo import DEFAULT_VARIANT, REPO_VARIANTS, default_cache_dir, project_root
 from ..structure import StructureData
 from .worker import (
     _UPDATE_BUTTON,
@@ -110,7 +110,7 @@ from .worker import (
 )
 
 _TREE_COLUMNS = ["Mod", "Enable", "Updates", "Hashes"]
-_TREE_COLUMN_WIDTHS = ((0, 240), (1, 70), (2, 150), (3, 210))
+_TREE_COLUMN_WIDTHS = ((0, 355), (1, 45), (2, 100), (3, 250))
 
 COLOR_UPDATED = QColor("#c47f00")
 COLOR_CURRENT = QColor(Qt.GlobalColor.darkGreen)
@@ -269,6 +269,14 @@ def update_button_state(
     if statuses and all(status is False for status in statuses.values()):
         return False, "Hashes updated"
     return False, "Update unavailable"
+
+
+def _has_hash_knowledge(datasets: Mapping[str, FixerData]) -> bool:
+    """Whether any loaded dataset carries usable hash knowledge."""
+    return any(
+        data.chains or data.entries or data.user_patches or data.db.reverse
+        for data in datasets.values()
+    )
 
 
 def _stamp_text(stamp: int) -> str:
@@ -887,7 +895,7 @@ class MainWindow(QMainWindow):
         for widget in self.findChildren(QWidget):
             widget.installEventFilter(self)
             widget.setMouseTracking(True)
-        self.resize(900, 600)
+        self.resize(750, 600)
         self.setMinimumSize(640, 420)
         self._refresh_actions()
         for variant in REPO_VARIANTS:
@@ -935,8 +943,10 @@ class MainWindow(QMainWindow):
         self._mods_edit.setReadOnly(True)
         self._mods_edit.setPlaceholderText("Select your 3DMigoto mods folder…")
         self._browse_btn = QPushButton("Browse…", central)
+        self._update_btn = QPushButton("Update hashes", central)
         mods_row.addWidget(self._mods_edit, 1)
         mods_row.addWidget(self._browse_btn)
+        mods_row.addWidget(self._update_btn)
         layout.addLayout(mods_row)
 
         self._tree = _ModsTree(self)
@@ -954,8 +964,6 @@ class MainWindow(QMainWindow):
         self._tree.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         layout.addWidget(self._tree, 3)
         strip = QHBoxLayout()
-        self._update_btn = QPushButton("Update hashes", central)
-        strip.addWidget(self._update_btn)
         strip.addStretch(1)
         self._mod_label = QLabel("Select a mod or .ini file…", central)
         strip.addWidget(self._mod_label)
@@ -1192,12 +1200,12 @@ class MainWindow(QMainWindow):
         """Confirm and install a dropped archive into a category or the root."""
         self.raise_()
         self.activateWindow()
-        if self._worker is not None or not self._data:
-            self.append_log("Load and analyze a mods folder before installing")
+        if self._worker is not None:
+            self.append_log("Busy — wait for the current task to finish before installing")
             return
         root = Path(self._mods_edit.text().strip())
         if not root.is_dir():
-            self.append_log("Load the mods folder before installing")
+            self.append_log("Select a mods folder before installing")
             return
         destination = root if node is None else node.path
         label = "the mods root" if node is None else f"'{_display_name(node)}'"
@@ -1236,17 +1244,8 @@ class MainWindow(QMainWindow):
         )
 
     def _on_load_data(self) -> None:
-        """Parse the already-cloned local data repos (no network access)."""
+        """Parse cloned data repos, or build a fallback dataset without them."""
         if self._worker is not None:
-            return
-        if not any(
-            changelog_path(default_cache_dir(variant)).exists()
-            for variant in REPO_VARIANTS
-        ):
-            self.append_log(
-                f"No local hash data yet — click '{_UPDATE_BUTTON}' to download it first."
-            )
-            QTimer.singleShot(0, self._check_hash_updates)
             return
         self.append_log("Loading hash data from local clones...")
         self._start_worker(load_all_data_worker(), self._on_data_loaded)
@@ -1529,10 +1528,10 @@ class MainWindow(QMainWindow):
         self._refresh_mod_actions()
 
     def _refresh_mod_actions(self) -> None:
-        """Enable Fix/Revert only with a loaded scope: data, folder, selection."""
+        """Enable Fix/Revert only with a loaded scope: hashes, folder, selection."""
         ready = (
             self._worker is None
-            and bool(self._data)
+            and _has_hash_knowledge(self._data or {})
             and bool(self._mods_edit.text().strip())
             and self._selected_node is not None
         )
@@ -1553,15 +1552,16 @@ class MainWindow(QMainWindow):
 
     def _start_analyze(self) -> None:
         """Auto-analyze the current mods folder into the mods overview."""
-        if self._worker is not None or not self._data:
+        if self._worker is not None:
             return
         mods_dir = self._mods_edit.text().strip()
         if not mods_dir:
             return
+        datasets = self._data or {DEFAULT_VARIANT: empty_fixer_data()}
         self._pending_analyzing_log = "Analyzing mods…"
         self._start_worker(
             analyze_worker(
-                mods_dir, self._data, self._structure, show_empty=self._show_empty_folders
+                mods_dir, datasets, self._structure, show_empty=self._show_empty_folders
             ),
             self._on_analyze_done,
         )

@@ -136,32 +136,43 @@ def _parse_available(
     return datasets
 
 
+def _fallback_dataset(log: LogFn) -> FixerData:
+    """Dataset built without any repo clone: legacy chains, pcdata, user patches."""
+    data = load_fixer_data(None, include_pcdata=True)
+    if data.chains or data.entries or data.user_patches or data.db.reverse:
+        log(
+            "No repo data cloned — using data/*.txt patches, "
+            "PlayerCharacterData.json and bundled legacy chains only."
+        )
+    else:
+        log("No hash data at all — hashes unknown until 'Update hashes' fetches it.")
+    return data
+
+
 def update_data_worker(parent: QObject | None = None) -> TaskWorker:
     """Worker that ensures every variant repo, then parses the available ones.
 
-    Unreachable variants are logged and skipped; ``done`` carries
-    ``(repo_dirs, datasets, heads, structure)``.
+    Unreachable variants are logged and skipped; with no cloned data at all,
+    a fallback dataset (legacy chains, pcdata, user patches) is used so the
+    GUI never blocks; ``done`` carries ``(repo_dirs, datasets, heads, structure)``.
     """
 
     def job(
         log: LogFn,
     ) -> tuple[dict[str, Path], dict[str, FixerData], dict[str, str], StructureData | None]:
         repo_dirs: dict[str, Path] = {}
-        last_error: Exception | None = None
         for variant in REPO_VARIANTS:
             try:
                 repo_dirs[variant] = ensure_repo(variant=variant, log=log)
             except RepoError as exc:
                 log(f"Could not update {variant} data: {exc}")
-                last_error = exc
         datasets = _parse_available(repo_dirs, log)
         if not datasets:
-            if last_error is not None:
-                raise last_error
-            raise ValueError(
-                f"no local hash data — click '{_UPDATE_BUTTON}' to download it first."
-            )
-        heads = {variant: repo_head(cache) for variant, cache in repo_dirs.items()}
+            datasets = {DEFAULT_VARIANT: _fallback_dataset(log)}
+        heads = {
+            variant: repo_head(repo_dirs.get(variant, default_cache_dir(variant)))
+            for variant in datasets
+        }
         structure = structure_for(datasets)
         return repo_dirs, datasets, heads, structure
 
@@ -171,8 +182,10 @@ def update_data_worker(parent: QObject | None = None) -> TaskWorker:
 def load_all_data_worker(parent: QObject | None = None) -> TaskWorker:
     """Worker that parses every locally cloned variant repo, no network access.
 
-    A variant without a local clone is logged as a hint to update; ``done``
-    carries ``(repo_dirs, datasets, heads, structure)`` like ``update_data_worker``.
+    A variant without a local clone is logged as a hint to update; with no
+    cloned data at all, a fallback dataset (legacy chains, pcdata, user
+    patches) is used; ``done`` carries ``(repo_dirs, datasets, heads, structure)``
+    like ``update_data_worker``.
     """
 
     def job(
@@ -181,9 +194,7 @@ def load_all_data_worker(parent: QObject | None = None) -> TaskWorker:
         caches = {variant: default_cache_dir(variant) for variant in REPO_VARIANTS}
         datasets = _parse_available(caches, log)
         if not datasets:
-            raise ValueError(
-                f"no local hash data — click '{_UPDATE_BUTTON}' to download it first."
-            )
+            datasets = {DEFAULT_VARIANT: _fallback_dataset(log)}
         heads = {variant: repo_head(cache) for variant, cache in caches.items()}
         structure = structure_for(datasets)
         return caches, datasets, heads, structure
