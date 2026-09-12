@@ -38,12 +38,14 @@ from PySide6.QtGui import (
     QGradient,
     QGuiApplication,
     QIcon,
+    QKeySequence,
     QLinearGradient,
     QMouseEvent,
     QPaintEvent,
     QPainter,
     QPalette,
-    QPixmap)
+    QPixmap,
+    QShortcut)
 # noinspection PyPackageRequirements
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -440,7 +442,14 @@ class _ModInfoDialog(QDialog):
     def __init__(self, mod_dir: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Mod info — {mod_dir.name.removeprefix(_DISABLED_PREFIX)}")
-        self.resize(480, 520)
+        self._settings = QSettings(
+            str(project_root() / "settings.ini"), QSettings.Format.IniFormat
+        )
+        saved = self._settings.value("mod_info_size")
+        if isinstance(saved, QSize):
+            self.resize(saved)
+        else:
+            self.resize(240, 320)
         layout = QVBoxLayout(self)
         author = read_mod_author(mod_dir)
         if author is not None:
@@ -478,6 +487,48 @@ class _ModInfoDialog(QDialog):
         scroll.setWidget(content)
         layout.addWidget(scroll, 1)
 
+    def done(self, result: int) -> None:
+        """Persist the dialog size, then finish the dialog."""
+        self._settings.setValue("mod_info_size", self.size())
+        super().done(result)
+
+
+class _FitImageLabel(QLabel):
+    """QLabel that draws its pixmap scaled to fit the widget, keeping aspect ratio."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._source: QPixmap = QPixmap()
+
+    def set_source_pixmap(self, pixmap: QPixmap) -> None:
+        """Store the pixmap to draw fitted on every repaint."""
+        self._source = pixmap
+        self.update()
+
+    def clear_source(self) -> None:
+        """Drop the stored pixmap so only the label text renders."""
+        self._source = QPixmap()
+        self.update()
+
+    def paintEvent(self, event: QPaintEvent) -> None:
+        """Draw the source pixmap scaled to fit, falling back to normal QLabel text."""
+        if self._source.isNull():
+            super().paintEvent(event)
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+        scaled = self._source.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        painter.drawPixmap(
+            (self.width() - scaled.width()) // 2,
+            (self.height() - scaled.height()) // 2,
+            scaled,
+        )
+
 
 class _PreviewGallery(QDialog):
     """Thumbnail gallery of a mod's preview images."""
@@ -489,7 +540,7 @@ class _PreviewGallery(QDialog):
         self.setWindowTitle(f"Preview — {mod_name}")
         self.resize(760, 560)
         layout = QVBoxLayout(self)
-        self._image_label = QLabel(self)
+        self._image_label = _FitImageLabel(self)
         self._image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._image_label.setMinimumSize(0, 320)
         layout.addWidget(self._image_label, 1)
@@ -513,21 +564,16 @@ class _PreviewGallery(QDialog):
 
     def _on_preview_changed(self, item: QListWidgetItem | None) -> None:
         if item is None:
-            self._image_label.clear()
+            self._image_label.clear_source()
             self._image_label.setText("")
             return
         pixmap = QPixmap(str(item.data(Qt.ItemDataRole.UserRole)))
         if pixmap.isNull():
-            self._image_label.setPixmap(QPixmap())
+            self._image_label.clear_source()
             self._image_label.setText("Could not load image.")
             return
         self._image_label.setText("")
-        scaled = pixmap.scaled(
-            self._image_label.size(),
-            Qt.AspectRatioMode.KeepAspectRatio,
-            Qt.TransformationMode.SmoothTransformation,
-        )
-        self._image_label.setPixmap(scaled)
+        self._image_label.set_source_pixmap(pixmap)
 
 
 _RESIZE_MARGIN = 8
@@ -893,6 +939,8 @@ class MainWindow(QMainWindow):
         show_empty_setting = self._settings.value("show_empty_folders", True)
         self._show_empty_folders = show_empty_setting in (True, "true")
         self._build_ui()
+        rescan_shortcut = QShortcut(QKeySequence(Qt.Key.Key_F5), self)
+        rescan_shortcut.activated.connect(self._start_analyze)
         self.installEventFilter(self)
         self.setMouseTracking(True)
         for widget in self.findChildren(QWidget):
