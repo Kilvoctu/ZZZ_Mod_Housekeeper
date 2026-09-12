@@ -23,7 +23,7 @@ def state_path(root: Path | None = None) -> Path:
     return Path(root if root is not None else project_root()) / _JSON_NAME
 
 
-def load_state(root: Path | None = None) -> dict[str, dict[str, object]]:
+def load_state(root: Path | None = None) -> dict[str, object]:
     """Read the consolidated state; a missing file yields the empty state.
 
     A present state.json is read tolerantly: unreadable or malformed content
@@ -56,9 +56,9 @@ def save_state(state: dict, root: Path | None = None) -> None:
     os.replace(tmp, path)
 
 
-def _normalize(raw: object) -> dict[str, dict[str, object]]:
+def _normalize(raw: object) -> dict[str, object]:
     """Keep the three known sections, dropping malformed entries per section."""
-    state: dict[str, dict[str, object]] = {
+    state: dict[str, object] = {
         "version": _STATE_VERSION,
         "settings": {},
         "presets": {},

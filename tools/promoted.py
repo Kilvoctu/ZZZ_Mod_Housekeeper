@@ -23,9 +23,11 @@ def load_promoted(root: Path | None = None) -> dict[str, str]:
     carry a raw DISABLED_ leaf.
     """
     promoted: dict[str, str] = {}
-    for key, value in load_state(root)["promoted"].items():
-        if isinstance(key, str) and isinstance(value, str):
-            promoted[canonical_key(key)] = value
+    section = load_state(root)["promoted"]
+    if isinstance(section, dict):
+        for key, value in section.items():
+            if isinstance(key, str) and isinstance(value, str):
+                promoted[canonical_key(key)] = value
     return promoted
 
 

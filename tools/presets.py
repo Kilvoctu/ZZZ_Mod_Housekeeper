@@ -16,9 +16,13 @@ _DISABLED_PREFIX = "DISABLED_"
 def load_presets(root: Path | None = None) -> dict[str, list[str]]:
     """Read {name: sorted enabled paths} from state.json; {} on missing, undecodable or non-dict JSON."""
     presets: dict[str, list[str]] = {}
-    for name, value in load_state(root)["presets"].items():
-        if isinstance(name, str) and isinstance(value, list):
-            presets[name] = sorted(entry for entry in value if isinstance(entry, str))
+    section = load_state(root)["presets"]
+    if isinstance(section, dict):
+        for name, value in section.items():
+            if isinstance(name, str) and isinstance(value, list):
+                presets[name] = sorted(
+                    entry for entry in value if isinstance(entry, str)
+                )
     return presets
 
 
