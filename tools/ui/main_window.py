@@ -1,4 +1,4 @@
-"""Main window of the ZZZ Hash Fixer GUI.
+"""Main window of the ZZZ Mod Housekeeper GUI.
 
 Selecting a mod, subfolder, or .ini file in the mods overview enables
 per-scope "Fix" and "Revert" over the fix-backup history.
@@ -379,13 +379,24 @@ class _KeyChip(QLabel):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = self.rect().adjusted(0, 0, -1, -1)
-        pen = self.palette().color(QPalette.ColorGroup.Normal, QPalette.ColorRole.Mid)
+        pen = _dimmed_color(self.palette(), 0.45)
         brush = self.palette().color(QPalette.ColorGroup.Normal, QPalette.ColorRole.Button)
         painter.setPen(pen)
         painter.setBrush(brush)
         painter.drawRoundedRect(rect, 4, 4)
         painter.setPen(self.palette().color(QPalette.ColorGroup.Normal, QPalette.ColorRole.ButtonText))
         painter.drawText(self.rect(), Qt.AlignmentFlag.AlignCenter, self.text())
+
+
+def _dimmed_color(palette: QPalette, amount: float) -> QColor:
+    """WindowText blended toward Window by amount (0..1) for secondary text."""
+    text = palette.color(QPalette.ColorGroup.Normal, QPalette.ColorRole.WindowText)
+    back = palette.color(QPalette.ColorGroup.Normal, QPalette.ColorRole.Window)
+    return QColor(
+        round(text.red() + (back.red() - text.red()) * amount),
+        round(text.green() + (back.green() - text.green()) * amount),
+        round(text.blue() + (back.blue() - text.blue()) * amount),
+    )
 
 
 def _toggle_row(label: str, key_display: str, parent: QWidget | None = None) -> QWidget:
@@ -400,6 +411,11 @@ def _toggle_row(label: str, key_display: str, parent: QWidget | None = None) -> 
     for index, token in enumerate(tokens):
         if index:
             plus = QLabel("+")
+            plus_palette = plus.palette()
+            plus_palette.setColor(
+                QPalette.ColorRole.Mid, _dimmed_color(plus_palette, 0.4)
+            )
+            plus.setPalette(plus_palette)
             plus.setForegroundRole(QPalette.ColorRole.Mid)
             layout.addWidget(plus)
         layout.addWidget(_KeyChip(token))
@@ -439,6 +455,11 @@ class _ModInfoDialog(QDialog):
                 continue
             if show_headers:
                 header = QLabel(info.path)
+                header_palette = header.palette()
+                header_palette.setColor(
+                    QPalette.ColorRole.Mid, _dimmed_color(header_palette, 0.4)
+                )
+                header.setPalette(header_palette)
                 header.setForegroundRole(QPalette.ColorRole.Mid)
                 rows_layout.addWidget(header)
             for toggle in info.toggles:
@@ -523,7 +544,7 @@ class _TitleBar(QWidget):
         self.app_menu = QMenu(self)
         self._menu_button.clicked.connect(self._show_menu)
         layout.addWidget(self._menu_button)
-        layout.addWidget(QLabel("ZZZ Hash Fixer", self))
+        layout.addWidget(QLabel("ZZZ Mod Housekeeper", self))
         layout.addStretch(1)
         self._min_button = QToolButton(self)
         self._min_button.setText("─")
@@ -854,7 +875,7 @@ class MainWindow(QMainWindow):
         self._pending_analyzing_log: str | None = None
         self._last_analysis_line: str | None = None
 
-        self.setWindowTitle("ZZZ Hash Fixer")
+        self.setWindowTitle("ZZZ Mod Housekeeper")
         self._settings = QSettings(
             str(project_root() / "settings.ini"), QSettings.Format.IniFormat
         )
@@ -1207,11 +1228,11 @@ class MainWindow(QMainWindow):
         """About box for the app."""
         QMessageBox.about(
             self,
-            "About ZZZ Hash Fixer",
-            "ZZZ Hash Fixer + Mod Manage<br><br>"
+            "About ZZZ Mod Housekeeper",
+            "ZZZ Mod Housekeeper<br><br>"
             "Fixes outdated asset hashes in mods for ZZZ.<br>"
             "Also can install mod archives, manage preset loadouts, and inspect mod info.<br><br>"
-            'By Kilvoctu: <a href="https://github.com/Kilvoctu/ZZZHashFix">Source</a>',
+            'By Kilvoctu: <a href="https://github.com/Kilvoctu/ZZZ_Mod_Housekeeper">Source</a>',
         )
 
     def _on_load_data(self) -> None:

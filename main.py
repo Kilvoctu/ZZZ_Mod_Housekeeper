@@ -1,4 +1,4 @@
-"""ZZZ Hash Fixer entry point."""
+"""ZZZ Mod Housekeeper entry point."""
 import sys
 from pathlib import Path
 
@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QMessageBox, QProxyStyle, QStyle
 from tools.repo import project_root
 from tools.ui.main_window import MainWindow
 
-_LOCK_NAME = "zzzhashfix.lock"
+_LOCK_NAME = "zzzmodkeeper.lock"
 _TOOLTIP_DELAY_MS = 1000
 
 
@@ -46,12 +46,12 @@ def _acquire_instance_lock() -> QLockFile | None:
 
 def main() -> None:
     app = QApplication(sys.argv)
-    app.setApplicationName("ZZZ Hash Fixer")
+    app.setApplicationName("ZZZ Mod Housekeeper")
     app.setStyle(_TooltipDelayStyle(app.style()))
     lock = _acquire_instance_lock()
     if lock is None:
         QMessageBox.warning(
-            None, "ZZZ Hash Fixer", "ZZZ Hash Fixer is already running."
+            None, "ZZZ Mod Housekeeper", "ZZZ Mod Housekeeper is already running."
         )
         sys.exit(0)
     icon = project_root() / "icon.ico"

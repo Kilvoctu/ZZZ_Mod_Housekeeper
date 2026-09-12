@@ -13,7 +13,7 @@ backups/
 *.zip
 *.rar
 *.7z
-ZZZHashFix.exe
-zzzhashfix.lock
+*.exe
+*.lock
 settings.ini
 presets.json

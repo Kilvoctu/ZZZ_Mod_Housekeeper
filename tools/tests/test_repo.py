@@ -17,7 +17,7 @@ def test_project_root_unfrozen_is_package_parent():
 
 
 def test_project_root_frozen_resolves_next_to_executable(tmp_path, monkeypatch):
-    exe = tmp_path / "ZZZHashFix.exe"
+    exe = tmp_path / "ZZZModKeeper.exe"
     monkeypatch.setitem(vars(sys), "frozen", True)
     monkeypatch.setattr(sys, "executable", str(exe))
     assert repo.project_root() == tmp_path
