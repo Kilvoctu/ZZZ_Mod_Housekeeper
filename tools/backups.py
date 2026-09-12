@@ -37,23 +37,52 @@ def default_backups_dir() -> Path:
 
 
 def folder_key(mods_dir: Path) -> str:
-    """Stable per-mods-folder key: sanitized root name + 8-char hash of the abs path.
+    """Stable per-mods-folder key: sanitized root name + 8-char digest.
 
-    Non-[A-Za-z0-9_-] characters become "_"; an empty or whitespace-only
-    name falls back to "mods".
+    Non-[A-Za-z0-9_-] chars become "_" (empty name -> "mods"); the digest
+    covers the mods path relative to the app root when it lives inside it,
+    and the absolute path otherwise.
     """
-    mods_dir = Path(mods_dir)
+    return _digest_key(mods_dir, _key_input(mods_dir))
+
+
+def _key_input(mods_dir: Path) -> str:
+    mods_dir = mods_dir.resolve()
+    try:
+        return mods_dir.relative_to(project_root().resolve()).as_posix()
+    except ValueError:
+        return str(mods_dir)
+
+
+def _legacy_folder_key(mods_dir: Path) -> str:
+    return _digest_key(mods_dir, str(Path(mods_dir).resolve()))
+
+
+def _digest_key(mods_dir: Path, key_input: str) -> str:
     name = mods_dir.name.strip()
     if not name:
         name = "mods"
     sanitized = re.sub(r"[^A-Za-z0-9_-]", "_", name)
-    digest = sha1(str(mods_dir.resolve()).encode("utf-8")).hexdigest()[:8]
-    return f"{sanitized}-{digest}"
+    return f"{sanitized}-{sha1(key_input.encode('utf-8')).hexdigest()[:8]}"
 
 
 def store_root(store_dir: Path, mods_dir: Path) -> Path:
     """The store folder for one mods folder: store_dir / folder_key(mods_dir)."""
+    migrate_store_key(store_dir, mods_dir)
     return Path(store_dir) / folder_key(mods_dir)
+
+
+def migrate_store_key(store_dir: Path, mods_dir: Path) -> None:
+    """Adopt the pre-relocation (absolute-key) store when it exists.
+
+    Renames the legacy-key store folder to the current key when the
+    current-key folder is absent; no-op otherwise.
+    """
+    legacy = Path(store_dir) / _legacy_folder_key(mods_dir)
+    current = Path(store_dir) / folder_key(mods_dir)
+    if legacy == current or not legacy.is_dir() or current.exists():
+        return
+    legacy.rename(current)
 
 
 def store_folder_for_mod(store_dir: Path, mods_dir: Path, mod_path: Path) -> Path:

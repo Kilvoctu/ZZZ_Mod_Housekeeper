@@ -8,6 +8,7 @@ from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Union
 
+# noinspection PyPackageRequirements
 from PySide6.QtCore import QObject, QThread, Signal
 
 from ..backups import (
@@ -29,7 +30,8 @@ from ..fixer import (
     scan_files,
     scan_folder,
 )
-from ..mods import analyze_mods
+from ..mods import ModNode, analyze_mods, set_mod_enabled
+from ..importer import extract_archive
 from ..repo import (
     DEFAULT_VARIANT,
     REPO_VARIANTS,
@@ -208,6 +210,7 @@ def analyze_worker(
     mods_dir: Path | str,
     datasets: Mapping[str, FixerData] | FixerData,
     structure: StructureData | None = None,
+    show_empty: bool = False,
     parent: QObject | None = None,
 ) -> TaskWorker:
     """Worker that analyses a mods folder; ``done`` carries (ModNode, AnalysisSummary).
@@ -222,6 +225,7 @@ def analyze_worker(
             Path(mods_dir),
             mapping,
             structure if structure is not None else structure_for(mapping),
+            show_empty=show_empty,
         )
 
     return TaskWorker(job, parent=parent)
@@ -356,5 +360,38 @@ def revert_worker(
         if missing:
             raise ValueError("backup no longer exists: " + "; ".join(missing))
         return revert_backups(choices, log=log)
+
+    return TaskWorker(job, log_kwarg="log", parent=parent)
+
+
+def import_archive_worker(
+    archive: Path,
+    destination: Path,
+    *,
+    replace: bool = False,
+    parent: QObject | None = None,
+) -> TaskWorker:
+    """Extract one mod archive in the background; ``done`` carries the file count."""
+
+    def job(log: LogFn) -> int:
+        return extract_archive(Path(archive), Path(destination), replace=replace, log=log)
+
+    return TaskWorker(job, log_kwarg="log", parent=parent)
+
+
+def apply_preset_worker(
+    changes: Sequence[tuple[ModNode, bool]],
+    parent: QObject | None = None,
+) -> TaskWorker:
+    """Toggle mods to a preset's enabled states; ``done`` carries the count applied."""
+    changes = [(mod, enabled) for mod, enabled in changes]
+
+    def job(log: LogFn) -> int:
+        applied = 0
+        for mod, enabled in changes:
+            set_mod_enabled(mod.path, enabled)
+            log(f"{'enabled' if enabled else 'disabled'} {mod.name}")
+            applied += 1
+        return applied
 
     return TaskWorker(job, log_kwarg="log", parent=parent)

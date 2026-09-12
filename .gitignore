@@ -10,6 +10,10 @@ data/PlayerCharacterData.json
 data/user.txt
 mods/
 backups/
+*.zip
+*.rar
+*.7z
 ZZZHashFix.exe
 zzzhashfix.lock
 settings.ini
+presets.json

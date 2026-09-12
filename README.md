@@ -1,6 +1,8 @@
 # ZZZ Hash Fixer
 
-GUI that can fix some ZZZ mods. This app is built mainly for personal use, as there are features I wanted that other mod fixers don't have.
+GUI that can fix some ZZZ mods. 
+This app is built mainly for personal use, as I wanted per-mod operations.  
+Additional basic mod management features included as scope creep.
 
 ## Requirements
 
@@ -11,10 +13,14 @@ GUI that can fix some ZZZ mods. This app is built mainly for personal use, as th
 - Fixes hashes using latest ZZZ-Model-Hash data.
 - Fix or revert per mod or single file.
 - Automatic backups under `backups/`; revert any fix, any depth.
-- Enable/disable mods via the `DISABLED_` prefix.
 - Supports custom hash patches via `data/user.txt` (`oldhash to newhash`, one per line).
 - Supports `PlayerCharacterData.json` from [ZZMI_tools](https://github.com/Satan1c/ZZMI_tools) (drop into `data/`).
 - Fully portable.
+- Basic mod management features:
+- - Install mod archives via menu or drag and drop.
+- - Enable/disable mods (via the `DISABLED_` prefix).
+- - Mod presets management.
+- - Context menu for mod info (author, toggles) and images, if any.
 
 ## Usage
 
@@ -22,8 +28,15 @@ GUI that can fix some ZZZ mods. This app is built mainly for personal use, as th
 2. Run `ZZZHashFix.exe`.
 3. Click **Update hashes** (needs internet for the first download).  
 *Alternatively, download hash data from sources below and drop into `data/`.
-4. Browse to your mods folder.
-5. Select a mod / subfolder / `.ini`, hit **Fix** (or **Revert** to undo).
+4. Browse to your mod folder.
+5. Hopefully the rest is self-explanatory.
+
+## Known Issues
+
+- Can't fix every mod.
+- No rename, delete, or similar file operations.
+- Other things I haven't added.
+- Jank.
 
 ## Credits & license
 

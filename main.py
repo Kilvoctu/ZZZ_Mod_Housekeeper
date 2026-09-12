@@ -2,15 +2,18 @@
 import sys
 from pathlib import Path
 
+# noinspection PyPackageRequirements
 from PySide6.QtCore import QLockFile, QStandardPaths
+# noinspection PyPackageRequirements
 from PySide6.QtGui import QIcon
+# noinspection PyPackageRequirements
 from PySide6.QtWidgets import QApplication, QMessageBox, QProxyStyle, QStyle
 
 from tools.repo import project_root
 from tools.ui.main_window import MainWindow
 
 _LOCK_NAME = "zzzhashfix.lock"
-_TOOLTIP_DELAY_MS = 2000
+_TOOLTIP_DELAY_MS = 1000
 
 
 class _TooltipDelayStyle(QProxyStyle):

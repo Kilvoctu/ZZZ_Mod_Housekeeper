@@ -26,6 +26,7 @@ from .structure import StructureData
 
 _DISABLED_PREFIX = "DISABLED_"
 _CONTAINER_DIRS = frozenset({"resources"})
+_PART_DIRS = frozenset({"body", "face", "hair", "legs", "torso", "head"})
 UPDATES_SIGNAL = "updates available"
 CURRENT_SIGNAL = "up to date"
 STRUCTURAL_SIGNAL = "structural"
@@ -71,6 +72,26 @@ def set_mod_enabled(path: Path, enabled: bool) -> Path:
     return target
 
 
+def create_mod_folder(mods_dir: Path, name: str) -> Path:
+    """Create a new empty folder directly under mods_dir and return it.
+
+    Surrounding whitespace is stripped; raises ValueError for blank names,
+    invalid Windows filename characters, a trailing dot, or duplicates.
+    """
+    cleaned = name.strip()
+    if not cleaned:
+        raise ValueError("Folder name is empty")
+    if any(char in cleaned for char in '\\/:*?"<>|'):
+        raise ValueError(f"Folder name contains invalid characters: {cleaned}")
+    if cleaned.endswith(".") or cleaned.endswith(" "):
+        raise ValueError(f"Folder name must not end with a dot or space: {cleaned}")
+    target = Path(mods_dir) / cleaned
+    if target.exists():
+        raise ValueError(f"A folder named '{cleaned}' already exists")
+    target.mkdir()
+    return target
+
+
 @dataclass
 class ModNode:
     """One node of the mods folder tree."""
@@ -102,16 +123,18 @@ def analyze_mods(
     root: Path,
     datasets: Mapping[str, FixerData] | FixerData,
     structure: StructureData | None = None,
+    show_empty: bool = False,
 ) -> tuple[ModNode, AnalysisSummary]:
     """Build the mod tree under root and analyze every mod's and file's version.
 
     ``datasets`` is one FixerData (default variant) or a mapping of variant
     keys to FixerData; a StructureData also counts pending structural fixes.
+    With ``show_empty`` on, empty directories become category nodes too.
     """
     root = Path(root)
     if isinstance(datasets, FixerData):
         datasets = {DEFAULT_VARIANT: datasets}
-    tree, skipped, root_acts_as_mod = _build_tree(root)
+    tree, skipped, root_acts_as_mod = _build_tree(root, show_empty=show_empty)
     ladders = {
         variant: version_ladder(dataset.entries)
         for variant, dataset in datasets.items()
@@ -258,25 +281,31 @@ def _mod_roots(
             if candidate in dirs_with_ini or candidate in dirs_with_mod_json:
                 mod_roots.add(candidate)
                 break
-    promoted = {
-        winner: winner.parent
-        for winner in mod_roots
-        if (
-            winner.name.lower() in _CONTAINER_DIRS
-            and winner in dirs_with_ini
-            and len(winner.parts) >= len(root.parts) + 2
-            and winner.parent not in dirs_with_ini
-            and winner.parent not in dirs_with_mod_json
-            and not any(
-                other is not winner and winner.parent in other.parents
-                for other in mod_roots
-            )
-        )
-    }
+    promoted: dict[Path, Path] = {}
+    for winner in mod_roots:
+        if winner not in dirs_with_ini:
+            continue
+        parent = winner.parent
+        if len(winner.parts) < len(root.parts) + 2:
+            continue
+        if parent in dirs_with_ini or parent in dirs_with_mod_json:
+            continue
+        siblings = [other for other in mod_roots if other.parent == parent]
+        if winner.name.lower() in _CONTAINER_DIRS and not any(
+            other is not winner and winner.parent in other.parents
+            for other in mod_roots
+        ):
+            promoted[winner] = parent
+        elif (
+            winner.name.lower() in _PART_DIRS
+            and len(siblings) >= 2
+            and all(other.name.lower() in _PART_DIRS for other in siblings)
+        ):
+            promoted[winner] = parent
     return {promoted.get(winner, winner) for winner in mod_roots}
 
 
-def _build_tree(root: Path) -> tuple[ModNode, int, bool]:
+def _build_tree(root: Path, show_empty: bool = False) -> tuple[ModNode, int, bool]:
     """Build the mod tree; returns (root node, excluded backups, root acts as a mod)."""
     dirs: set[tuple[str, ...]] = set()
     included_parts: list[tuple[str, ...]] = []
@@ -310,6 +339,9 @@ def _build_tree(root: Path) -> tuple[ModNode, int, bool]:
         elif any(parts[:index] in mod_parts for index in range(len(parts))):
             kind = "subfolder"
             name = parts[-1]
+        elif show_empty:
+            kind = "category"
+            name = parts[-1]
         else:
             continue
         nodes[parts] = ModNode(
@@ -339,11 +371,11 @@ def _build_tree(root: Path) -> tuple[ModNode, int, bool]:
     for node in nodes.values():
         directories = sorted(
             (child for child in node.children if child.kind != "file"),
-            key=lambda child: child.name,
+            key=lambda child: child.name.removeprefix(_DISABLED_PREFIX),
         )
         files = sorted(
             (child for child in node.children if child.kind == "file"),
-            key=lambda child: child.name,
+            key=lambda child: child.name.removeprefix(_DISABLED_PREFIX),
         )
         node.children = directories + files
     return nodes[()], skipped, () in mod_parts

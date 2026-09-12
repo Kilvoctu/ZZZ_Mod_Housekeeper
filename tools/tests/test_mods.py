@@ -409,6 +409,102 @@ def test_single_mod_category_not_promoted(tmp_path):
     ]
 
 
+def test_show_empty_folders_as_categories(tmp_path):
+    root = tmp_path / "mods"
+    (root / "Anby").mkdir(parents=True)
+    (root / "Group" / "RealMod").mkdir(parents=True)
+    (root / "Group" / "RealMod" / "r.ini").write_text(
+        "[TextureOverrideR]\n", encoding="utf-8"
+    )
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA, show_empty=True)
+    assert by_name(tree, "Anby").kind == "category"
+    assert inventory(tree) == [
+        ("category", "Anby", False),
+        ("category", "Group", False),
+        ("file", "r.ini", False),
+        ("mod", "RealMod", False),
+        ("root", "mods", False),
+    ]
+    hidden, _summary = mods.analyze_mods(root, EMPTY_DATA)
+    assert [node.name for node in walk_nodes(hidden) if node.name == "Anby"] == []
+
+
+def test_nested_empty_dirs_show_when_enabled(tmp_path):
+    root = tmp_path / "mods"
+    (root / "Anby" / "inner").mkdir(parents=True)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA, show_empty=True)
+    assert by_name(tree, "Anby").kind == "category"
+    assert by_name(tree, "inner").kind == "category"
+    hidden, _summary = mods.analyze_mods(root, EMPTY_DATA)
+    assert [node.name for node in walk_nodes(hidden) if node.name == "Anby"] == []
+    assert [node.name for node in walk_nodes(hidden) if node.name == "inner"] == []
+
+
+def test_multi_part_parts_fold_into_one_mod(tmp_path):
+    root = tmp_path / "mods"
+    (root / "Group" / "Pack" / "body").mkdir(parents=True)
+    (root / "Group" / "Pack" / "face").mkdir()
+    (root / "Group" / "Pack" / "body" / "body.ini").write_text(
+        "[TextureOverrideBody]\n", encoding="utf-8"
+    )
+    (root / "Group" / "Pack" / "face" / "face.ini").write_text(
+        "[TextureOverrideFace]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Group", False),
+        ("file", "body.ini", False),
+        ("file", "face.ini", False),
+        ("mod", "Pack", False),
+        ("root", "mods", False),
+        ("subfolder", "body", False),
+        ("subfolder", "face", False),
+    ]
+    parents = parent_map(tree)
+    pack = by_name(tree, "Pack")
+    assert nearest_mod(by_name(tree, "body.ini"), parents) is pack
+    assert nearest_mod(by_name(tree, "face.ini"), parents) is pack
+
+
+def test_part_pack_with_non_part_sibling_stays_category(tmp_path):
+    root = tmp_path / "mods"
+    (root / "Pack" / "body").mkdir(parents=True)
+    (root / "Pack" / "real").mkdir()
+    (root / "Pack" / "body" / "a.ini").write_text(
+        "[TextureOverrideA]\n", encoding="utf-8"
+    )
+    (root / "Pack" / "real" / "b.ini").write_text(
+        "[TextureOverrideB]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Pack", False),
+        ("file", "a.ini", False),
+        ("file", "b.ini", False),
+        ("mod", "body", False),
+        ("mod", "real", False),
+        ("root", "mods", False),
+    ]
+
+
+def test_single_part_folder_not_promoted(tmp_path):
+    root = tmp_path / "mods"
+    (root / "Cat" / "body").mkdir(parents=True)
+    (root / "Cat" / "body" / "s.ini").write_text(
+        "[TextureOverrideS]\n", encoding="utf-8"
+    )
+    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+
+    assert inventory(tree) == [
+        ("category", "Cat", False),
+        ("file", "s.ini", False),
+        ("mod", "body", False),
+        ("root", "mods", False),
+    ]
+
+
 def test_promoted_mod_version_and_summary(tmp_path):
     root = build_container_mods(tmp_path)
     data = version_data(LADDER_ENTRIES, {"aaaa0000": [HashRef("CharaA", "Body", "ib")]})
@@ -1667,3 +1763,43 @@ def test_updates_text_structural_file_row():
     version = ModVersion(current_count=1, total=1, structural_count=1)
     assert updates_text(version, as_mod=False) == "structural"
     assert updates_text(ModVersion(), as_mod=False) == ""
+
+
+def test_create_mod_folder_creates_and_strips(tmp_path):
+    mods_dir = Path(tmp_path)
+    created = mods.create_mod_folder(mods_dir, "  My Folder  ")
+    assert created == mods_dir / "My Folder"
+    assert created.is_dir()
+
+
+def test_create_mod_folder_rejects_blank(tmp_path):
+    for name in ("", "   "):
+        with pytest.raises(ValueError, match="empty"):
+            mods.create_mod_folder(Path(tmp_path), name)
+
+
+def test_create_mod_folder_rejects_invalid_characters(tmp_path):
+    for name in ("a/b", "a\\b", "a:b", 'a"b', "a*b", "a?b", "a<b", "a>b", "a|b"):
+        with pytest.raises(ValueError, match="invalid characters"):
+            mods.create_mod_folder(Path(tmp_path), name)
+
+
+def test_create_mod_folder_rejects_trailing_dot_and_strips_space(tmp_path):
+    mods_dir = Path(tmp_path)
+    with pytest.raises(ValueError, match="dot"):
+        mods.create_mod_folder(mods_dir, "name.")
+    created = mods.create_mod_folder(mods_dir, "name ")
+    assert created == mods_dir / "name"
+    assert created.is_dir()
+
+
+def test_create_mod_folder_rejects_existing(tmp_path):
+    mods_dir = Path(tmp_path)
+    mods.create_mod_folder(mods_dir, "Fresh")
+    with pytest.raises(ValueError, match="already exists"):
+        mods.create_mod_folder(mods_dir, "Fresh")
+
+
+def test_create_mod_folder_requires_existing_parent(tmp_path):
+    with pytest.raises(OSError):
+        mods.create_mod_folder(Path(tmp_path) / "missing", "Fresh")

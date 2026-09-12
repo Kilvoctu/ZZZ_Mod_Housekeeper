@@ -3,6 +3,7 @@
 import re
 import shutil
 from datetime import datetime
+from hashlib import sha1
 from pathlib import Path
 
 import pytest
@@ -946,6 +947,62 @@ def test_default_backups_dir():
     store_dir = default_backups_dir()
     assert store_dir.name == "backups"
     assert store_dir.parent == repo.default_cache_dir().parent.parent
+
+
+def test_folder_key_relative_inside_app_root(tmp_path, monkeypatch):
+    """Mods folders inside the app root key on the relative path."""
+    root = tmp_path / "app"
+    (root / "mods").mkdir(parents=True)
+    monkeypatch.setattr(backups, "project_root", lambda: root)
+    original = folder_key(root / "mods")
+    relocated = tmp_path / "moved"
+    (relocated / "mods").mkdir(parents=True)
+    monkeypatch.setattr(backups, "project_root", lambda: relocated)
+    assert folder_key(relocated / "mods") == original
+
+
+def test_folder_key_absolute_outside_app_root(tmp_path, monkeypatch):
+    """Mods folders outside the app root keep the absolute-path key."""
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    monkeypatch.setattr(backups, "project_root", lambda: tmp_path / "app")
+    expected = f"mods-{sha1(str(mods.resolve()).encode('utf-8')).hexdigest()[:8]}"
+    assert folder_key(mods) == expected
+
+
+def test_migrate_store_key_adopts_legacy(tmp_path, monkeypatch):
+    """A legacy absolute-key store is renamed under the relative key."""
+    root = tmp_path / "app"
+    mods = root / "mods"
+    mods.mkdir(parents=True)
+    monkeypatch.setattr(backups, "project_root", lambda: root)
+    store = tmp_path / "backups"
+    legacy = store / f"mods-{sha1(str(mods.resolve()).encode('utf-8')).hexdigest()[:8]}"
+    legacy.mkdir(parents=True)
+    (legacy / "keep.bak").write_text("x", encoding="utf-8")
+    result = store_root(store, mods)
+    assert result == store / folder_key(mods)
+    assert result != legacy
+    assert (result / "keep.bak").read_text(encoding="utf-8") == "x"
+    assert not legacy.exists()
+
+
+def test_migrate_store_key_no_ops(tmp_path, monkeypatch):
+    """Migration keeps the current store and leaves the legacy store alone."""
+    root = tmp_path / "app"
+    mods = root / "mods"
+    mods.mkdir(parents=True)
+    monkeypatch.setattr(backups, "project_root", lambda: root)
+    store = tmp_path / "backups"
+    current = store / folder_key(mods)
+    current.mkdir(parents=True)
+    (current / "fresh.bak").write_text("y", encoding="utf-8")
+    legacy = store / f"mods-{sha1(str(mods.resolve()).encode('utf-8')).hexdigest()[:8]}"
+    legacy.mkdir(parents=True)
+    (legacy / "old.bak").write_text("x", encoding="utf-8")
+    assert store_root(store, mods) == current
+    assert (current / "fresh.bak").read_text(encoding="utf-8") == "y"
+    assert (legacy / "old.bak").read_text(encoding="utf-8") == "x"
 
 
 def test_backup_path_for_layout(tmp_path):
