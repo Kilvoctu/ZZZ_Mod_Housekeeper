@@ -16,7 +16,9 @@ from tools.blend_remap import (
     find_targets,
     load_blend_remaps,
     remap_bytes,
+    remove_blend_state_keys,
     resolve_blend_table,
+    rewrite_blend_state_keys,
 )
 from tools.fixer import revert_backups
 
@@ -391,3 +393,147 @@ def test_revert_then_reapply_restores_original_and_reapplies(tmp_path):
     marker = json.loads(blend_state_path(store, mods).read_text(encoding="utf-8"))
     assert marker["x.buf"]["after"] == hashlib.sha256(remapped).hexdigest()
     assert marker["x.buf"]["before"] == hashlib.sha256(original).hexdigest()
+
+
+def test_rewrite_blend_state_keys_rewrites_and_matches_apply_style(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "Old/a.buf": {"hash": "aabbccdd", "stamp": 1},
+                "Other/b.buf": {"hash": "11223344", "stamp": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert rewrite_blend_state_keys(store, mods, "Old", "New") == 1
+
+    expected = {
+        "New/a.buf": {"hash": "aabbccdd", "stamp": 1},
+        "Other/b.buf": {"hash": "11223344", "stamp": 2},
+    }
+    assert json.loads(state_path.read_text(encoding="utf-8")) == expected
+    assert state_path.read_text(encoding="utf-8") == (
+        json.dumps(expected, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    )
+
+
+def test_rewrite_blend_state_keys_category_prefix(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps({"Cat/x/y.buf": {"hash": "aabbccdd"}, "keep/z.buf": {}}),
+        encoding="utf-8",
+    )
+
+    assert rewrite_blend_state_keys(store, mods, "Cat", "Pets") == 1
+
+    rewritten = json.loads(state_path.read_text(encoding="utf-8"))
+    assert set(rewritten) == {"Pets/x/y.buf", "keep/z.buf"}
+    assert rewritten["keep/z.buf"] == {}
+
+
+def test_rewrite_blend_state_keys_no_marker_file_writes_nothing(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+
+    assert rewrite_blend_state_keys(store, mods, "Old", "New") == 0
+
+    assert not blend_state_path(store, mods).exists()
+    assert not store.exists()
+
+
+def test_rewrite_blend_state_keys_ignores_blank_and_identical_prefixes(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps({"Old/a.buf": {"hash": "aabbccdd"}}), encoding="utf-8"
+    )
+    raw = state_path.read_bytes()
+
+    assert rewrite_blend_state_keys(store, mods, "", "New") == 0
+    assert rewrite_blend_state_keys(store, mods, "Old", "Old") == 0
+
+    assert state_path.read_bytes() == raw
+
+
+def test_remove_blend_state_keys_exact_and_others_kept(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "Old/a.buf": {"hash": "aabbccdd", "stamp": 1},
+                "Other/b.buf": {"hash": "11223344", "stamp": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert remove_blend_state_keys(store, mods, "Old") == 1
+
+    expected = {"Other/b.buf": {"hash": "11223344", "stamp": 2}}
+    assert json.loads(state_path.read_text(encoding="utf-8")) == expected
+    assert state_path.read_text(encoding="utf-8") == (
+        json.dumps(expected, sort_keys=True, indent=2, ensure_ascii=False) + "\n"
+    )
+
+
+def test_remove_blend_state_keys_category_prefix(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps({"Cat/x/y.buf": {"hash": "aabbccdd"}, "Keep/z.buf": {}}),
+        encoding="utf-8",
+    )
+
+    assert remove_blend_state_keys(store, mods, "Cat") == 1
+
+    rewritten = json.loads(state_path.read_text(encoding="utf-8"))
+    assert set(rewritten) == {"Keep/z.buf"}
+    assert rewritten["Keep/z.buf"] == {}
+
+
+def test_remove_blend_state_keys_no_marker_file_writes_nothing(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+
+    assert remove_blend_state_keys(store, mods, "Old") == 0
+
+    assert not blend_state_path(store, mods).exists()
+    assert not store.exists()
+
+
+def test_remove_blend_state_keys_no_match_leaves_file_untouched(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps({"Old/a.buf": {"hash": "aabbccdd"}}), encoding="utf-8"
+    )
+    raw = state_path.read_bytes()
+
+    assert remove_blend_state_keys(store, mods, "Ghost") == 0
+
+    assert state_path.read_bytes() == raw

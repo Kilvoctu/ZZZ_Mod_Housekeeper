@@ -201,3 +201,113 @@ def test_swap_between_clean_presets(tmp_path):
         (nsfw, True),
     ]
     assert presets.preset_changes(root2, base, preset1) == []
+
+
+def test_retarget_preset_paths_rewrites_exact_entry(tmp_path):
+    presets.save_preset("x", ["Old", "Cat/Old2"], tmp_path)
+
+    assert presets.retarget_preset_paths([("Old", "New")], tmp_path) == 1
+
+    assert presets.load_presets(tmp_path) == {"x": ["Cat/Old2", "New"]}
+
+
+def test_retarget_preset_paths_rewrites_category_prefix(tmp_path):
+    presets.save_preset("x", ["Cat/Old", "Cat/A/B", "Other"], tmp_path)
+
+    assert presets.retarget_preset_paths([("Cat", "Pets")], tmp_path) == 2
+
+    assert presets.load_presets(tmp_path) == {"x": ["Other", "Pets/A/B", "Pets/Old"]}
+
+
+def test_retarget_preset_paths_keeps_nested_and_root_prefixes_isolated(tmp_path):
+    presets.save_preset("x", ["A/Cat", "A/Cat/Mod", "Cat/Mod"], tmp_path)
+
+    assert presets.retarget_preset_paths([("A/Cat", "A/Pets")], tmp_path) == 2
+    assert presets.load_presets(tmp_path) == {"x": ["A/Pets", "A/Pets/Mod", "Cat/Mod"]}
+
+    assert presets.retarget_preset_paths([("Cat", "Dogs")], tmp_path) == 1
+    assert presets.load_presets(tmp_path) == {"x": ["A/Pets", "A/Pets/Mod", "Dogs/Mod"]}
+
+
+def test_retarget_preset_paths_no_match_leaves_file_untouched(tmp_path):
+    presets.save_preset("x", ["Cat/Old"], tmp_path)
+    raw = presets.presets_path(tmp_path).read_bytes()
+
+    assert presets.retarget_preset_paths([("Ghost", "New")], tmp_path) == 0
+
+    assert presets.presets_path(tmp_path).read_bytes() == raw
+
+
+def test_retarget_preset_paths_skips_blank_and_identical_swaps(tmp_path):
+    presets.save_preset("x", ["Old"], tmp_path)
+    raw = presets.presets_path(tmp_path).read_bytes()
+
+    assert presets.retarget_preset_paths([("", "New")], tmp_path) == 0
+    assert presets.retarget_preset_paths([("   ", "New")], tmp_path) == 0
+    assert presets.retarget_preset_paths([("Old", "Old")], tmp_path) == 0
+    assert presets.presets_path(tmp_path).read_bytes() == raw
+
+
+def test_retarget_preset_paths_missing_file_writes_nothing(tmp_path):
+    assert presets.retarget_preset_paths([("Old", "New")], tmp_path) == 0
+    assert not presets.presets_path(tmp_path).exists()
+
+
+def test_remove_preset_paths_exact_entry(tmp_path):
+    presets.save_preset("x", ["Old", "Cat/Old2"], tmp_path)
+
+    assert presets.remove_preset_paths(["Old"], tmp_path) == 1
+
+    assert presets.load_presets(tmp_path) == {"x": ["Cat/Old2"]}
+
+
+def test_remove_preset_paths_category_prefix(tmp_path):
+    presets.save_preset("x", ["Cat/Old", "Cat/A/B", "Other"], tmp_path)
+
+    assert presets.remove_preset_paths(["Cat"], tmp_path) == 2
+
+    assert presets.load_presets(tmp_path) == {"x": ["Other"]}
+
+
+def test_remove_preset_paths_no_match_leaves_file_untouched(tmp_path):
+    presets.save_preset("x", ["Cat/Old"], tmp_path)
+    raw = presets.presets_path(tmp_path).read_bytes()
+
+    assert presets.remove_preset_paths(["Ghost"], tmp_path) == 0
+
+    assert presets.presets_path(tmp_path).read_bytes() == raw
+
+
+def test_remove_preset_paths_skips_blank_paths(tmp_path):
+    presets.save_preset("x", ["Cat/Old"], tmp_path)
+    raw = presets.presets_path(tmp_path).read_bytes()
+
+    assert presets.remove_preset_paths(["", "  "], tmp_path) == 0
+
+    assert presets.presets_path(tmp_path).read_bytes() == raw
+
+
+def test_remove_preset_paths_missing_file_writes_nothing(tmp_path):
+    assert presets.remove_preset_paths(["Old"], tmp_path) == 0
+
+    assert not presets.presets_path(tmp_path).exists()
+
+
+def test_remove_preset_paths_prunes_emptied_preset(tmp_path):
+    presets.save_preset("solo", ["Old"], tmp_path)
+
+    assert presets.remove_preset_paths(["Old"], tmp_path) == 1
+
+    assert presets.load_presets(tmp_path) == {}
+    assert "solo" not in presets.presets_path(tmp_path).read_text(encoding="utf-8")
+
+
+def test_remove_preset_paths_keeps_preexisting_empty_preset(tmp_path):
+    presets.save_preset("empty", [], tmp_path)
+    presets.save_preset("x", ["Other"], tmp_path)
+    raw = presets.presets_path(tmp_path).read_bytes()
+
+    assert presets.remove_preset_paths(["Old"], tmp_path) == 0
+
+    assert presets.load_presets(tmp_path) == {"empty": [], "x": ["Other"]}
+    assert presets.presets_path(tmp_path).read_bytes() == raw

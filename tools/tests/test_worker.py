@@ -1,5 +1,6 @@
 """Tests for tools.ui.worker: data and archive workers running on a thread."""
 
+import json
 import shutil
 import subprocess
 import tempfile
@@ -10,10 +11,13 @@ import pytest
 # noinspection PyPackageRequirements
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
-from tools import importer
+from tools import importer, presets
+from tools.backups import store_folder_for_mod
+from tools.blend_remap import blend_state_path
 from tools.fixer import FixerData
 from tools.repo import DEFAULT_VARIANT, RepoError
 from tools.ui.worker import (
+    delete_folder_worker,
     import_archive_worker,
     load_all_data_worker,
     update_data_worker,
@@ -202,3 +206,126 @@ def test_update_data_worker_offline_returns_fallback(tmp_path, monkeypatch):
         for message in logs
     )
     assert any("No hash data at all" in message for message in logs)
+
+
+def delete_setup(
+    monkeypatch,
+    tmp_path,
+    preset_paths: dict[str, list[str]],
+    markers: dict[str, dict] | None = None,
+):
+    mods = tmp_path / "mods"
+    store = tmp_path / "store"
+    presets_dir = tmp_path / "presets"
+    mods.mkdir()
+    presets_dir.mkdir()
+    monkeypatch.setattr("tools.ui.worker.default_backups_dir", lambda: store)
+    monkeypatch.setattr("tools.presets.project_root", lambda: presets_dir)
+    for name, entries in preset_paths.items():
+        presets.save_preset(name, entries, presets_dir)
+    if markers is not None:
+        state_path = blend_state_path(store, mods)
+        state_path.parent.mkdir(parents=True)
+        state_path.write_text(json.dumps(markers), encoding="utf-8")
+    return mods, store
+
+
+def test_delete_folder_worker_mod_deletes_folder_and_followups(tmp_path, monkeypatch):
+    mods, store = delete_setup(
+        monkeypatch,
+        tmp_path,
+        {"p1": ["Cat/OldMod", "Other"], "p2": ["Cat/OldMod"]},
+        {
+            "Cat/OldMod/a.buf": {"hash": "aabbccdd", "stamp": 1},
+            "Other/keep.buf": {"hash": "11223344", "stamp": 2},
+        },
+    )
+    mod = mods / "Cat" / "OldMod"
+    mod.mkdir(parents=True)
+    (mod / "a.ini").write_text("ini", encoding="utf-8")
+    mirror = store_folder_for_mod(store, mods, mod)
+    mirror.mkdir(parents=True)
+    (mirror / "a.ini -- 2026-01-01 00.00.00.bak").write_text("bak", encoding="utf-8")
+
+    worker = delete_folder_worker(mods, mod, "mod")
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    result = holder["result"]
+    assert isinstance(result, tuple) and len(result) == 2
+    deleted, file_count = result
+    assert deleted == mod
+    assert file_count == 1
+    assert not mod.exists()
+    # p2 loses its last entry, so the prune-on-empty rule removes it entirely.
+    assert presets.load_presets() == {"p1": ["Other"]}
+    assert not mirror.exists()
+    assert json.loads(blend_state_path(store, mods).read_text(encoding="utf-8")) == {
+        "Other/keep.buf": {"hash": "11223344", "stamp": 2}
+    }
+    assert any("Deleted" in message for message in logs)
+    assert any("Presets updated" in message for message in logs)
+    assert any("Backup history purged" in message for message in logs)
+    assert any("Blend-remap markers removed" in message for message in logs)
+
+
+def test_delete_folder_worker_category_deletes_subtree_and_followups(
+    tmp_path, monkeypatch
+):
+    mods, store = delete_setup(
+        monkeypatch,
+        tmp_path,
+        {"p1": ["Cat/M1", "Cat/M2", "Other"]},
+        {
+            "Cat/M1/x.buf": {"hash": "aabbccdd", "stamp": 1},
+            "Other/keep.buf": {"hash": "11223344", "stamp": 2},
+        },
+    )
+    cat = mods / "Cat"
+    (cat / "M1").mkdir(parents=True)
+    (cat / "M1" / "a.ini").write_text("a", encoding="utf-8")
+    (cat / "M2").mkdir(parents=True)
+    (cat / "M2" / "b.ini").write_text("b", encoding="utf-8")
+    mirror = store_folder_for_mod(store, mods, cat) / "M1"
+    mirror.mkdir(parents=True)
+    (mirror / "a.ini -- 2026-01-01 00.00.00.bak").write_text("bak", encoding="utf-8")
+
+    worker = delete_folder_worker(mods, cat, "category")
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    result = holder["result"]
+    assert isinstance(result, tuple) and len(result) == 2
+    deleted, file_count = result
+    assert deleted == cat
+    assert file_count == 2
+    assert not cat.exists()
+    assert presets.load_presets() == {"p1": ["Other"]}
+    assert not store_folder_for_mod(store, mods, cat).exists()
+    assert json.loads(blend_state_path(store, mods).read_text(encoding="utf-8")) == {
+        "Other/keep.buf": {"hash": "11223344", "stamp": 2}
+    }
+    assert any("Deleted" in message for message in logs)
+    assert any("Presets updated" in message for message in logs)
+    assert any("Backup history purged" in message for message in logs)
+    assert any("Blend-remap markers removed" in message for message in logs)
+
+
+def test_delete_folder_worker_prunes_emptied_preset(tmp_path, monkeypatch):
+    mods, store = delete_setup(monkeypatch, tmp_path, {"solo": ["Cat/OldMod"]})
+    mod = mods / "Cat" / "OldMod"
+    mod.mkdir(parents=True)
+    (mod / "a.ini").write_text("ini", encoding="utf-8")
+    mirror = store_folder_for_mod(store, mods, mod)
+    mirror.mkdir(parents=True)
+    (mirror / "a.ini -- 2026-01-01 00.00.00.bak").write_text("bak", encoding="utf-8")
+
+    holder = run_worker(delete_folder_worker(mods, mod, "mod"))
+
+    assert holder["error"] is None
+    assert presets.load_presets() == {}
+    assert "solo" not in presets.presets_path().read_text(encoding="utf-8")

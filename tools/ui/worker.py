@@ -4,6 +4,7 @@
 thin factory helpers prebind the engine calls the main window needs.
 """
 
+import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Union
@@ -15,9 +16,17 @@ from ..backups import (
     collect_backup_chains,
     collect_backup_chains_for,
     default_backups_dir,
+    delete_store_folder,
     included_ini_files,
+    retarget_store_folder,
 )
-from ..blend_remap import apply_remap, load_blend_remaps, scan_blend_targets
+from ..blend_remap import (
+    apply_remap,
+    load_blend_remaps,
+    remove_blend_state_keys,
+    rewrite_blend_state_keys,
+    scan_blend_targets,
+)
 from ..fixer import (
     FilePlan,
     FixerData,
@@ -30,8 +39,9 @@ from ..fixer import (
     scan_files,
     scan_folder,
 )
-from ..mods import ModNode, analyze_mods, set_mod_enabled
+from ..mods import ModNode, analyze_mods, rename_mod_folder, set_mod_enabled
 from ..importer import extract_archive
+from ..presets import remove_preset_paths, retarget_preset_paths
 from ..repo import (
     DEFAULT_VARIANT,
     REPO_VARIANTS,
@@ -48,6 +58,8 @@ LogFn = Callable[[str], None]
 
 _UPDATE_BUTTON = "Update hashes"
 """The data button's label, for error hints."""
+
+_DISABLED_PREFIX = "DISABLED_"
 
 
 def friendly_error(exc: BaseException) -> str:
@@ -404,5 +416,105 @@ def apply_preset_worker(
             log(f"{'enabled' if enabled else 'disabled'} {mod.name}")
             applied += 1
         return applied
+
+    return TaskWorker(job, log_kwarg="log", parent=parent)
+
+
+def rename_folder_worker(
+    mods_dir: Path | str,
+    old_path: Path | str,
+    new_name: str,
+    kind: str,
+    parent: QObject | None = None,
+) -> TaskWorker:
+    """Rename a mod or category folder on disk; presets, backups and blend markers follow.
+
+    ``kind`` selects the stored-entry form ("mod" leaf-cleaned, "category" on-disk); ``done`` carries the new Path.
+    """
+
+    def job(log: LogFn) -> Path:
+        mods = Path(mods_dir)
+        old = Path(old_path)
+        new = rename_mod_folder(old, new_name)
+        log(f"Renamed '{old.name}' -> '{new.name}'")
+        rel_old = old.relative_to(mods)
+        rel_new = new.relative_to(mods)
+        parent_rel = rel_old.parent
+        prefix = "" if parent_rel == Path(".") else parent_rel.as_posix() + "/"
+        if kind == "mod":
+            old_entry = prefix + old.name.removeprefix(_DISABLED_PREFIX)
+            new_entry = prefix + new.name.removeprefix(_DISABLED_PREFIX)
+        else:
+            old_entry = prefix + old.name
+            new_entry = prefix + new.name
+        changed = retarget_preset_paths([(old_entry, new_entry)])
+        if changed:
+            log(f"Presets updated: {changed} path(s) now point at '{new.name}'")
+        moved = retarget_store_folder(
+            default_backups_dir(), mods, rel_old, rel_new
+        )
+        log(
+            f"Backup history {'moved' if moved else 'kept in place'} "
+            f"for '{new.name}'"
+        )
+        canonical_old = "/".join(
+            part.removeprefix(_DISABLED_PREFIX) for part in rel_old.parts
+        )
+        canonical_new = "/".join(
+            part.removeprefix(_DISABLED_PREFIX) for part in rel_new.parts
+        )
+        rewritten = rewrite_blend_state_keys(
+            default_backups_dir(), mods, canonical_old, canonical_new
+        )
+        if rewritten:
+            log(f"Blend-remap markers updated: {rewritten} key(s)")
+        return new
+
+    return TaskWorker(job, log_kwarg="log", parent=parent)
+
+
+def delete_folder_worker(
+    mods_dir: Path | str,
+    node_path: Path | str,
+    kind: str,
+    parent: QObject | None = None,
+) -> TaskWorker:
+    """Delete a mod or category folder; presets, backup history and markers follow.
+
+    ``kind`` is the ModNode kind ("mod" or "category"); mods use the stored
+    DISABLED_-leaf-cleaned entry form, categories keep their on-disk name.
+    ``done`` carries (deleted_path, file_count).
+    """
+
+    def job(log: LogFn) -> tuple[Path, int]:
+        mods = Path(mods_dir)
+        old = Path(node_path)
+        rel = old.relative_to(mods)
+        try:
+            file_count = sum(1 for item in old.rglob("*") if item.is_file())
+        except OSError:
+            file_count = 0
+        shutil.rmtree(old)
+        log(f"Deleted '{old.name}' ({file_count} file(s))")
+        parent_rel = rel.parent
+        entry_prefix = "" if parent_rel == Path(".") else parent_rel.as_posix() + "/"
+        if kind == "mod":
+            old_entry = entry_prefix + old.name.removeprefix(_DISABLED_PREFIX)
+        else:
+            old_entry = entry_prefix + old.name
+        removed = remove_preset_paths([old_entry])
+        if removed:
+            log(f"Presets updated: {removed} path(s) removed")
+        if delete_store_folder(default_backups_dir(), mods, rel):
+            log(f"Backup history purged for '{old.name}'")
+        canonical = "/".join(
+            part.removeprefix(_DISABLED_PREFIX) for part in rel.parts
+        )
+        removed_markers = remove_blend_state_keys(
+            default_backups_dir(), mods, canonical
+        )
+        if removed_markers:
+            log(f"Blend-remap markers removed: {removed_markers} key(s)")
+        return old, file_count
 
     return TaskWorker(job, log_kwarg="log", parent=parent)

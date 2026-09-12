@@ -16,9 +16,11 @@ from tools.backups import (
     collect_backup_chains,
     collect_backup_chains_for,
     default_backups_dir,
+    delete_store_folder,
     folder_key,
     move_file,
     parse_store_backup_name,
+    retarget_store_folder,
     store_folder_for_mod,
     store_folder_to_open,
     store_root,
@@ -1139,6 +1141,127 @@ def test_store_folder_for_mod_outside_mods_dir_raises(tmp_path):
         store_folder_for_mod(
             tmp_path / "store", tmp_path / "mods", tmp_path / "elsewhere"
         )
+
+
+def test_retarget_store_folder_moves_mirror_folder(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    backup = (
+        store_folder_for_mod(store, mods, mods / "Foo")
+        / "a.ini -- 2026-01-01 00.00.00.bak"
+    )
+    backup.parent.mkdir(parents=True)
+    backup.write_text(S1, encoding="utf-8")
+
+    assert retarget_store_folder(store, mods, Path("Foo"), Path("Bar")) is True
+
+    moved = store_folder_for_mod(store, mods, mods / "Bar") / backup.name
+    assert moved.read_text(encoding="utf-8") == S1
+    assert not store_folder_for_mod(store, mods, mods / "Foo").exists()
+
+
+def test_retarget_store_folder_canonicalizes_disabled_rels(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    mirror = store_folder_for_mod(store, mods, mods / "Foo")
+    mirror.mkdir(parents=True)
+    (mirror / "a.ini -- 2026-01-01 00.00.00.bak").write_text(S1, encoding="utf-8")
+
+    assert retarget_store_folder(
+        store, mods, Path("DISABLED_Foo"), Path("DISABLED_Bar")
+    ) is True
+
+    moved = store_folder_for_mod(store, mods, mods / "Bar")
+    assert (moved / "a.ini -- 2026-01-01 00.00.00.bak").read_text(
+        encoding="utf-8"
+    ) == S1
+    assert not mirror.exists()
+
+
+def test_retarget_store_folder_moves_whole_category_subtree(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    nested = store_folder_for_mod(store, mods, mods / "Cat") / "Sub"
+    nested.mkdir(parents=True)
+    (nested / "x.bak").write_text(S1, encoding="utf-8")
+
+    assert retarget_store_folder(store, mods, Path("Cat"), Path("Pets")) is True
+
+    moved = store_folder_for_mod(store, mods, mods / "Pets") / "Sub" / "x.bak"
+    assert moved.read_text(encoding="utf-8") == S1
+    assert not store_folder_for_mod(store, mods, mods / "Cat").exists()
+
+
+def test_retarget_store_folder_missing_source_or_taken_target(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+
+    assert retarget_store_folder(store, mods, Path("Foo"), Path("Bar")) is False
+
+    source = store_folder_for_mod(store, mods, mods / "Foo")
+    source.mkdir(parents=True)
+    (source / "keep.bak").write_text(S1, encoding="utf-8")
+    target = store_folder_for_mod(store, mods, mods / "Bar")
+    target.mkdir(parents=True)
+    (target / "other.bak").write_text(S2, encoding="utf-8")
+
+    assert retarget_store_folder(store, mods, Path("Foo"), Path("Bar")) is False
+
+    assert (source / "keep.bak").read_text(encoding="utf-8") == S1
+    assert (target / "other.bak").read_text(encoding="utf-8") == S2
+
+
+def test_delete_store_folder_removes_mirror_with_baks(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    mirror = store_folder_for_mod(store, mods, mods / "Foo")
+    mirror.mkdir(parents=True)
+    (mirror / "a.ini -- 2026-01-01 00.00.00.bak").write_text(S1, encoding="utf-8")
+
+    assert delete_store_folder(store, mods, Path("Foo")) is True
+
+    assert not store_folder_for_mod(store, mods, mods / "Foo").exists()
+
+
+def test_delete_store_folder_canonicalizes_disabled_rel(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    mirror = store_folder_for_mod(store, mods, mods / "Foo")
+    mirror.mkdir(parents=True)
+    (mirror / "a.ini -- 2026-01-01 00.00.00.bak").write_text(S1, encoding="utf-8")
+
+    assert delete_store_folder(store, mods, Path("DISABLED_Foo")) is True
+
+    assert not mirror.exists()
+
+
+def test_delete_store_folder_removes_whole_category_subtree(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    nested = store_folder_for_mod(store, mods, mods / "Cat") / "Sub"
+    nested.mkdir(parents=True)
+    (nested / "x.bak").write_text(S1, encoding="utf-8")
+
+    assert delete_store_folder(store, mods, Path("Cat")) is True
+
+    assert not store_folder_for_mod(store, mods, mods / "Cat").exists()
+
+
+def test_delete_store_folder_absent_mirror_writes_nothing(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+
+    assert delete_store_folder(store, mods, Path("Ghost")) is False
+
+    assert not store.exists()
 
 
 def test_store_folder_to_open_prefers_nearest_existing(tmp_path):

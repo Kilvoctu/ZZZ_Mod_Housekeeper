@@ -21,6 +21,7 @@ from tools.mods import (
     aggregate_updates,
     analyze_mods,
     analyze_scope,
+    rename_mod_folder,
     retarget_subtree_paths,
     set_mod_enabled,
 )
@@ -660,6 +661,96 @@ def test_set_mod_enabled_noop_when_already_in_state(tmp_path):
         "Cool Mod",
         "DISABLED_Cool Mod",
     ]
+
+
+def test_rename_mod_folder_renames_enabled_folder(tmp_path):
+    foo = tmp_path / "Foo"
+    foo.mkdir()
+    (foo / "a.ini").write_text("[TextureOverrideA]\n", encoding="utf-8")
+
+    result = rename_mod_folder(foo, "Bar")
+
+    assert result == tmp_path / "Bar"
+    assert result.is_dir()
+    assert (result / "a.ini").exists()
+    assert not foo.exists()
+
+
+def test_rename_mod_folder_keeps_disabled_prefix(tmp_path):
+    disabled = tmp_path / "DISABLED_Foo"
+    disabled.mkdir()
+
+    result = rename_mod_folder(disabled, "Bar")
+
+    assert result == tmp_path / "DISABLED_Bar"
+    assert result.is_dir()
+    assert not disabled.exists()
+
+
+def test_rename_mod_folder_rejects_disabled_target_name(tmp_path):
+    foo = tmp_path / "Foo"
+    foo.mkdir()
+    disabled = tmp_path / "DISABLED_Foo"
+    disabled.mkdir()
+
+    with pytest.raises(ValueError):
+        rename_mod_folder(foo, "DISABLED_X")
+    with pytest.raises(ValueError):
+        rename_mod_folder(disabled, "DISABLED_X")
+
+    assert foo.is_dir() and disabled.is_dir()
+    assert sorted(entry.name for entry in tmp_path.iterdir()) == [
+        "DISABLED_Foo",
+        "Foo",
+    ]
+
+
+def test_rename_mod_folder_same_display_name_is_noop(tmp_path):
+    foo = tmp_path / "Foo"
+    foo.mkdir()
+    disabled = tmp_path / "DISABLED_Foo"
+    disabled.mkdir()
+
+    assert rename_mod_folder(foo, "Foo") == foo
+    assert rename_mod_folder(disabled, "Foo") == disabled
+    assert foo.is_dir() and disabled.is_dir()
+
+
+def test_rename_mod_folder_collision_raises(tmp_path):
+    foo = tmp_path / "Foo"
+    foo.mkdir()
+    bar = tmp_path / "Bar"
+    bar.mkdir()
+
+    with pytest.raises(FileExistsError):
+        rename_mod_folder(foo, "Bar")
+
+    assert foo.is_dir() and bar.is_dir()
+
+
+def test_rename_mod_folder_case_only_rename_allowed(tmp_path):
+    foo = tmp_path / "Foo"
+    foo.mkdir()
+
+    result = rename_mod_folder(foo, "foo")
+
+    assert result == tmp_path / "foo"
+    assert [entry.name for entry in tmp_path.iterdir()] == ["foo"]
+
+
+def test_rename_mod_folder_validates_names(tmp_path):
+    foo = tmp_path / "Foo"
+    foo.mkdir()
+
+    with pytest.raises(ValueError, match="empty"):
+        rename_mod_folder(foo, "")
+    with pytest.raises(ValueError, match="invalid characters"):
+        rename_mod_folder(foo, "bad\\name")
+    with pytest.raises(ValueError, match="dot"):
+        rename_mod_folder(foo, "name.")
+
+    assert foo.is_dir()
+    assert [entry.name for entry in tmp_path.iterdir()] == ["Foo"]
 
 
 def test_collect_texture_override_hashes_section_filtering(tmp_path):
