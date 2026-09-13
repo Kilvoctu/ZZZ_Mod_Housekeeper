@@ -118,3 +118,27 @@ def test_parse_changelog_file(tmp_path):
     path = tmp_path / "Hash变动日志.txt"
     path.write_text(SYNTHETIC, encoding="utf-8")
     assert changelog.parse_changelog_file(path) == parse()
+
+
+def test_parse_face_texcoord_transitions():
+    text = (
+        "===============================================================================\n"
+        "  版本 3.1 -> 3.2\n"
+        "===============================================================================\n"
+        "【橘福福jufufu】\n"
+        "IB: 321768df（脸）\n"
+        "  Texcoord: 8267358b -> 768c9ec4\n"
+        "\n"
+        "【琉音Dialyn】\n"
+        "IB: d860525e（眉毛）\n"
+        "  texcoord_vb: d90368ed -> 27fd9193\n"
+        "IB: facb2461（脸部）\n"
+        "  texcoord_vb: f6c5296e -> dafc9647\n"
+        "【Someone】\n"
+        "IB: 11111111 -> 22222222（身体）\n"
+        "  texcoord_vb: 33333333 -> 44444444\n"
+        "  Texcoord: 55555555 -> 66666666\n"
+        "  Texcoord: 新增 -> 77777777\n"
+    )
+    transitions = changelog.parse_face_texcoord_transitions(text)
+    assert transitions == {"8267358b": "768c9ec4", "f6c5296e": "dafc9647"}

@@ -4,8 +4,7 @@ venv/
 build/
 dist/
 runtime/
-data/zzz-model-hash/
-data/zzz-model-hash_lowvarm/
+data/*/
 data/PlayerCharacterData.json
 data/user.txt
 mods/

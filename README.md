@@ -15,24 +15,28 @@ This app is built mainly for personal use.
 - Mod fixer features:
   - Automatic update checks from source repos.
   - Fix or revert per mod or single file.
+  - Update hashes to currently known values.
+  - Remap blend bone indices from data tables or auto-derived mappings.
+  - Repair face texcoords for current game format (fixes scrambled faces).
   - Automatic backups under `backups/`; revert any fix, any depth.
-  - Supports custom hash patches via `data/user.txt` (`oldhash to newhash`, one per line).
-  - Supports `PlayerCharacterData.json` from [ZZMI_tools](https://github.com/Satan1c/ZZMI_tools) (drop into `data/`).
+  - Supports custom hash patches via `user.txt` (`oldhash to newhash`, one per line) and `PlayerCharacterData.json` from [ZZMI_tools](https://github.com/Satan1c/ZZMI_tools) (drop into `data/`).
 - Mod management features:
   - Install mod archives via menu or drag and drop (zip; rar/7z when 7-zip or WinRAR is installed).
   - Enable/disable mods (via the `DISABLED_` prefix).
   - Top-level folder creation.
   - Renaming and deleting folders/mods.
+  - Tree filters: show enabled only, show/hide empty folders.
   - Mod preset loadout management.
-  - Context menu for mod info (author, toggles) and images.
+  - Context menu for mod info (author, toggles).
+  - Add/browse mod images in its gallery, set a preview thumbnail as hover tooltip.
 
 ## Setup/Usage
 
 1. Download/clone this repo.
 2. Run `build_exe.bat` and wait until it's done.
 3. Run `ZZZModKeeper.exe`.
-4. Optional: click **Update hashes** to enable the fix features; mod management works without hash data.  
-*Alternatively, download hash data from sources below and drop into `data/`.
+4. Optional: click **Update data** to enable the fix features; mod management works without data.  
+*Alternatively, download data from sources below and drop into `data/`.
 5. Browse to your mod folder.
 6. Hopefully the rest is self-explanatory.
 
@@ -46,8 +50,7 @@ This app is built mainly for personal use.
 
 ## Credits & license
 
-Source hash data is pulled from [ZZZ-Model-Hash](https://github.com/hefengchang/ZZZ-Model-Hash)
-and [ZZZ-Model-Hash_LowVarm](https://github.com/hefengchang/ZZZ-Model-Hash_LowVarm).  
+Source data is pulled from [ZZZ-Model-Hash](https://github.com/hefengchang/ZZZ-Model-Hash), [ZZZ-Model-Hash_LowVarm](https://github.com/hefengchang/ZZZ-Model-Hash_LowVarm), and [ZZZ-Model-Fix-Tool](https://github.com/hefengchang/ZZZ-Model-Fix-Tool) by [    hefengchang](https://github.com/hefengchang).  
 Inspired and based on work by [ZZZ-Mod-Fixer](https://github.com/Vonksdesu/ZZZ-Mod-Fixer) and [ZZMI_tools](https://github.com/Satan1c/ZZMI_tools).
 
 MIT License, Copyright (c) 2026 Kilvoctu — see [LICENSE](LICENSE).

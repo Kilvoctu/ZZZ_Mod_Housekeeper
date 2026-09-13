@@ -20,6 +20,7 @@ from tools.backups import (
     folder_key,
     move_file,
     parse_store_backup_name,
+    prune_empty_store_folders,
     retarget_store_folder,
     store_folder_for_mod,
     store_folder_to_open,
@@ -1264,6 +1265,51 @@ def test_delete_store_folder_absent_mirror_writes_nothing(tmp_path):
     assert not store.exists()
 
 
+def test_prune_empty_store_folders_removes_empty_mirrors(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    root = store_root(store, mods)
+    for name in ("CharaA", "CharaB"):
+        (root / "Cat" / "ModA" / "Gen" / name).mkdir(parents=True)
+    backup = root / "Cat" / "ModB" / "char.ini -- 2026-01-01 00.00.00.bak"
+    backup.parent.mkdir(parents=True)
+    backup.write_text(S1, encoding="utf-8")
+
+    assert prune_empty_store_folders(store, mods) == 4
+
+    assert not (root / "Cat" / "ModA").exists()
+    assert not (root / "Cat" / "ModA" / "Gen" / "CharaA").exists()
+    assert not (root / "Cat" / "ModA" / "Gen" / "CharaB").exists()
+    assert (root / "Cat").is_dir()
+    assert (root / "Cat" / "ModB").is_dir()
+    assert backup.read_text(encoding="utf-8") == S1
+    assert root.is_dir()
+
+
+def test_prune_empty_store_folders_without_store_is_zero(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+
+    assert prune_empty_store_folders(store, mods) == 0
+
+    assert not store.exists()
+
+
+def test_prune_empty_store_folders_keeps_store_root(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    root = store_root(store, mods)
+    (root / "Cat" / "ModA" / "Gen").mkdir(parents=True)
+
+    assert prune_empty_store_folders(store, mods) == 3
+
+    assert not (root / "Cat").exists()
+    assert root.is_dir()
+
+
 def test_store_folder_to_open_prefers_nearest_existing(tmp_path):
     mods = tmp_path / "mods"
     mods.mkdir()
@@ -2361,3 +2407,101 @@ def test_redump_warning_deduped_per_rename(tmp_path):
         ("hash", 8, "43ed3c22", "619c5c94"),
         ("hash", 11, "43ed3c22", "619c5c94"),
     ]
+
+
+def _face_data(face_hashes: frozenset[str] | None = None) -> FixerData:
+    return FixerData(
+        chains={
+            "aaaaaaaa": [
+                ChangeEntry(
+                    role="texcoord",
+                    from_hash="aaaaaaaa",
+                    to_hash="bbbbbbbb",
+                    version_index=1,
+                )
+            ]
+        },
+        ib_index_changes={},
+        db=CharacterDB(),
+        entries=[
+            ChangeEntry(
+                role="texcoord",
+                from_hash="aaaaaaaa",
+                to_hash="bbbbbbbb",
+                version_index=1,
+            )
+        ],
+        face_texcoord_hashes=face_hashes or frozenset({"aaaaaaaa", "bbbbbbbb"}),
+    )
+
+
+def test_scan_flags_face_texcoord_rename_with_buffer_warning(tmp_path):
+    path = tmp_path / "m.ini"
+    path.write_text(
+        "[TextureOverrideSampleFaceTexcoord]\r\n"
+        "hash = aaaaaaaa\r\n"
+        "vb1 = ResourceSampleFaceTexcoord\r\n"
+        "\r\n"
+        "[ResourceSampleFaceTexcoord]\r\n"
+        "type = Buffer\r\n"
+        "stride = 36\r\n"
+        "filename = FaceTexcoord.buf\r\n",
+        encoding="utf-8",
+    )
+    (plan,) = scan_files([path], _face_data())
+    suggestions = plan.suggestions
+    hash_fixes = [s for s in suggestions if s.kind == "hash"]
+    warnings = [s for s in suggestions if s.kind == INDEX_WARNING_KIND]
+    assert [(s.old, s.new) for s in hash_fixes] == [("aaaaaaaa", "bbbbbbbb")]
+    assert len(warnings) == 1
+    assert "face texcoord" in warnings[0].reason
+
+
+def test_scan_repoints_untracked_face_texcoord_to_table_current(tmp_path):
+    db = CharacterDB()
+    character = Character(name="NicoleTest")
+    character.components.append(
+        Component(name="Face-脸", fields={"texcoord": "cccc0003"})
+    )
+    db.characters["NicoleTest"] = character
+    db.reverse["dddd0004"] = [HashRef("NicoleTest", "Face-脸", "ib")]
+    data = FixerData(chains={}, ib_index_changes={}, db=db)
+    path = tmp_path / "m.ini"
+    path.write_text(
+        "[TextureOverrideNicoleTestFaceIB]\r\n"
+        "hash = dddd0004\r\n"
+        "handling = skip\r\n"
+        "\r\n"
+        "[TextureOverrideNicoleTestFaceTexcoord]\r\n"
+        "hash = eeee0005\r\n"
+        "vb1 = ResourceFaceTexcoord\r\n",
+        encoding="utf-8",
+    )
+    (plan,) = scan_files([path], data)
+    assert [(s.kind, s.old, s.new) for s in plan.suggestions] == [
+        ("hash", "eeee0005", "cccc0003")
+    ]
+    assert "untracked" in plan.suggestions[0].reason
+
+
+def test_scan_repoint_ignores_eyebrow_sections(tmp_path):
+    db = CharacterDB()
+    character = Character(name="NicoleTest")
+    character.components.append(
+        Component(name="Face-脸", fields={"texcoord": "cccc0003"})
+    )
+    db.characters["NicoleTest"] = character
+    db.reverse["dddd0004"] = [HashRef("NicoleTest", "Face-脸", "ib")]
+    data = FixerData(chains={}, ib_index_changes={}, db=db)
+    path = tmp_path / "m.ini"
+    path.write_text(
+        "[TextureOverrideNicoleTestFaceIB]\r\n"
+        "hash = dddd0004\r\n"
+        "handling = skip\r\n"
+        "\r\n"
+        "[TextureOverrideNicoleTestEyebrowTexcoord]\r\n"
+        "hash = eeee0005\r\n"
+        "vb1 = ResourceEyebrowTexcoord\r\n",
+        encoding="utf-8",
+    )
+    assert scan_files([path], data) == []

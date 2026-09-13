@@ -6,7 +6,7 @@ Game skeleton updates renumber bone indices; a mod's blend draw `hash =` line ge
 import json
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -234,6 +234,27 @@ def load_blend_state(store_dir: Path, mods_dir: Path) -> dict[str, dict]:
         return {}
 
 
+def blend_state_key(mods_dir: Path, path: Path) -> str:
+    """Canonical marker key: DISABLED_-stripped relative dirs plus filename."""
+    rel = Path(path).relative_to(Path(mods_dir))
+    return "/".join(
+        (
+            *(part.removeprefix(_DISABLED_TOGGLE) for part in rel.parent.parts),
+            rel.name,
+        )
+    )
+
+
+def write_blend_state(store_dir: Path, mods_dir: Path, state: dict[str, dict]) -> None:
+    """Persist the marker dict as the marker file (sorted keys, two-space indent)."""
+    state_path = blend_state_path(store_dir, mods_dir)
+    state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(
+        json.dumps(state, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+
+
 def apply_remap(
     target: BlendTarget,
     store_dir: Path,
@@ -245,13 +266,7 @@ def apply_remap(
     data = target.path.read_bytes()
     sha_now = sha256(data).hexdigest()
     state = load_blend_state(store_dir, mods_dir)
-    rel = target.path.relative_to(mods_dir)
-    key = "/".join(
-        (
-            *(part.removeprefix(_DISABLED_TOGGLE) for part in rel.parent.parts),
-            rel.name,
-        )
-    )
+    key = blend_state_key(mods_dir, target.path)
     recorded = state.get(key)
     if isinstance(recorded, dict) and recorded.get("after") == sha_now:
         return False
@@ -267,13 +282,10 @@ def apply_remap(
         "before": sha_now,
         "hash": target.hash,
         "stamp": stamp,
+        "action": "table",
+        "source": "",
     }
-    state_path = blend_state_path(store_dir, mods_dir)
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    state_path.write_text(
-        json.dumps(state, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
-        encoding="utf-8",
-    )
+    write_blend_state(store_dir, mods_dir, state)
     if changed:
         target.path.write_bytes(new)
         message = (
@@ -311,12 +323,7 @@ def rewrite_blend_state_keys(
         rewritten[new_key] = marker
         changed += 1
     if changed:
-        state_path = blend_state_path(store_dir, mods_dir)
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(
-            json.dumps(rewritten, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        write_blend_state(store_dir, mods_dir, rewritten)
     return changed
 
 
@@ -333,10 +340,60 @@ def remove_blend_state_keys(store_dir: Path, mods_dir: Path, prefix: str) -> int
         else:
             kept[key] = marker
     if removed:
-        state_path = blend_state_path(store_dir, mods_dir)
-        state_path.parent.mkdir(parents=True, exist_ok=True)
-        state_path.write_text(
-            json.dumps(kept, sort_keys=True, indent=2, ensure_ascii=False) + "\n",
-            encoding="utf-8",
-        )
+        write_blend_state(store_dir, mods_dir, kept)
     return removed
+
+
+def blend_marker_kind(store_dir: Path, mods_dir: Path, live_path: Path) -> str | None:
+    """Fix-kind annotation for a live blend from its marker; None without one.
+
+    "blend remap (vote)" marks a buffer remapped from dump data by the vote
+    pass, "blend remap (table)" one remapped from the shipped tables; a legacy
+    marker without an "action" field predates the distinction and counts as a
+    table remap.
+    """
+    marker = load_blend_state(store_dir, mods_dir).get(
+        blend_state_key(mods_dir, live_path)
+    )
+    if not isinstance(marker, dict):
+        return None
+    return (
+        "blend remap (vote)"
+        if marker.get("action") == "vote"
+        else "blend remap (table)"
+    )
+
+
+def prune_blend_markers(
+    store_dir: Path, mods_dir: Path, live_paths: Iterable[Path]
+) -> int:
+    """Drop markers of blends a revert put back to pre-remap bytes; returns the count dropped.
+
+    A marker is dropped when its live .buf exists again with exactly the
+    content the marker's "before" hash recorded, i.e. nothing remapped remains
+    on disk; non-.buf paths are ignored and unreadable live files are skipped.
+    The state file is rewritten at most once, only when something was dropped.
+    """
+    state = load_blend_state(store_dir, mods_dir)
+    if not state:
+        return 0
+    dropped = 0
+    for live in live_paths:
+        live = Path(live)
+        if live.suffix != ".buf":
+            continue
+        key = blend_state_key(mods_dir, live)
+        marker = state.get(key)
+        if not isinstance(marker, dict):
+            continue
+        try:
+            data = live.read_bytes()
+        except OSError:
+            continue
+        if sha256(data).hexdigest() != marker.get("before"):
+            continue
+        del state[key]
+        dropped += 1
+    if dropped:
+        write_blend_state(store_dir, mods_dir, state)
+    return dropped

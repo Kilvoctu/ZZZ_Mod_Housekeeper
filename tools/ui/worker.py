@@ -18,14 +18,29 @@ from ..backups import (
     default_backups_dir,
     delete_store_folder,
     included_ini_files,
+    prune_empty_store_folders,
     retarget_store_folder,
 )
 from ..blend_remap import (
     apply_remap,
     load_blend_remaps,
+    prune_blend_markers,
     remove_blend_state_keys,
     rewrite_blend_state_keys,
     scan_blend_targets,
+)
+from ..blend_vote import (
+    apply_blend_vote_remap,
+    scan_blend_vote_targets,
+)
+from ..dumpdata import DumpData, load_dump_data
+from ..texcoord_upgrade import (
+    apply_upgrade,
+    buffer_gate,
+    prune_texcoord_markers,
+    remove_texcoord_state_keys,
+    rewrite_texcoord_state_keys,
+    scan_texcoord_targets,
 )
 from ..fixer import (
     FilePlan,
@@ -50,6 +65,7 @@ from ..repo import (
     changelog_path,
     default_cache_dir,
     ensure_repo,
+    hash_variants,
     repo_head,
     repo_update_available,
 )
@@ -57,7 +73,7 @@ from ..structure import StructureData, build_structure
 
 LogFn = Callable[[str], None]
 
-_UPDATE_BUTTON = "Update hashes"
+_UPDATE_BUTTON = "Update data"
 """The data button's label, for error hints."""
 
 _DISABLED_PREFIX = "DISABLED_"
@@ -139,14 +155,41 @@ def _as_paths(scope: Scope) -> tuple[bool, list[Path]]:
 def _parse_available(
     repo_dirs: dict[str, Path], log: LogFn
 ) -> dict[str, FixerData]:
-    """Parse every repo whose changelog exists; log and skip the others."""
+    """Parse every hash-repo whose changelog exists; log and skip the others.
+
+    Dump-kind variants (fix_tool) are not hash datasets and are skipped
+    silently; their parsed dump data is attached separately by
+    ``_attach_dump_data``.
+    """
     datasets: dict[str, FixerData] = {}
     for variant, cache in repo_dirs.items():
+        if variant not in hash_variants():
+            continue
         if not changelog_path(cache).exists():
             log(f"No {variant} data cloned yet — click '{_UPDATE_BUTTON}' to fetch it.")
             continue
         datasets[variant] = load_fixer_data(cache, include_pcdata=(variant == "2048p"))
     return datasets
+
+
+def _attach_dump_data(datasets: dict[str, FixerData], log: LogFn) -> None:
+    """Attach the parsed fix-tool dump cache to every loaded dataset.
+
+    The dump variant is shared rather than per-variant: one DumpData is set on
+    all datasets (the 2048p character DB splits dump folder names); without a
+    dump cache this is a silent no-op and every dataset keeps its empty dumps.
+    """
+    dump_cache = default_cache_dir("fix_tool")
+    if not dump_cache.is_dir():
+        return
+    source = datasets.get("2048p")
+    dumps: DumpData = load_dump_data(
+        dump_cache, db=source.db if source is not None else None
+    )
+    for data in datasets.values():
+        data.dumps = dumps
+    if dumps.vertexlimit:
+        log(f"Loaded {len(dumps.vertexlimit)} dump component(s)")
 
 
 def _fallback_dataset(log: LogFn) -> FixerData:
@@ -158,7 +201,7 @@ def _fallback_dataset(log: LogFn) -> FixerData:
             "PlayerCharacterData.json and bundled legacy chains only."
         )
     else:
-        log("No hash data at all — hashes unknown until 'Update hashes' fetches it.")
+        log(f"No upstream data loaded — hashes unknown until '{_UPDATE_BUTTON}' fetches it.")
     return data
 
 
@@ -182,6 +225,7 @@ def update_data_worker(parent: QObject | None = None) -> TaskWorker:
         datasets = _parse_available(repo_dirs, log)
         if not datasets:
             datasets = {DEFAULT_VARIANT: _fallback_dataset(log)}
+        _attach_dump_data(datasets, log)
         heads = {
             variant: repo_head(repo_dirs.get(variant, default_cache_dir(variant)))
             for variant in datasets
@@ -208,6 +252,7 @@ def load_all_data_worker(parent: QObject | None = None) -> TaskWorker:
         datasets = _parse_available(caches, log)
         if not datasets:
             datasets = {DEFAULT_VARIANT: _fallback_dataset(log)}
+        _attach_dump_data(datasets, log)
         heads = {variant: repo_head(cache) for variant, cache in caches.items()}
         structure = structure_for(datasets)
         return caches, datasets, heads, structure
@@ -281,8 +326,9 @@ def fix_mod_worker(
     """Scan one mod/file scope and apply its fixes in one background job.
 
     Applies run in a bounded fixpoint with one store backup per file per run; folder
-    scopes then remap bound blend buffers using data/blend_remaps.json with store
-    backups; ``done`` carries ``(variant, plans, written)``.
+    scopes then remap bound blend buffers using data/blend_remaps.json and upgrade
+    face texcoord buffers to the post-2.54 float32 format, both with store backups;
+    ``done`` carries ``(variant, plans, written)``.
     """
 
     def job(log: LogFn) -> tuple[str, list[FilePlan], int]:
@@ -302,7 +348,7 @@ def fix_mod_worker(
         loaded = datasets.get(variant)
         if loaded is None:
             raise ValueError(
-                f"{variant} hash data is not loaded — click 'Update hashes' first."
+                f"{variant} data is not loaded — click '{_UPDATE_BUTTON}' first."
             )
         data = loaded
         if structure is None:
@@ -341,6 +387,18 @@ def fix_mod_worker(
             tables = load_blend_remaps()
             for target in scan_blend_targets(paths[0], tables):
                 apply_remap(target, default_backups_dir(), Path(mods_dir), log=log)
+            for target in scan_blend_vote_targets(paths[0], data.dumps, tables):
+                apply_blend_vote_remap(
+                    target, default_backups_dir(), Path(mods_dir), log=log
+                )
+            for target in scan_texcoord_targets(paths[0], buffer_gate(data)):
+                apply_upgrade(
+                    target,
+                    default_backups_dir(),
+                    Path(mods_dir),
+                    log=log,
+                    dumps=data.dumps,
+                )
         return variant, plans, len(written_paths)
 
     return TaskWorker(job, log_kwarg="log", parent=parent)
@@ -369,19 +427,41 @@ def backup_chains_worker(
 
 
 def revert_worker(
-    choices: list[tuple[Path, Path]], parent: QObject | None = None
+    choices: list[tuple[Path, Path]],
+    mods_dir: str | Path | None = None,
+    store_dir: Path | None = None,
+    parent: QObject | None = None,
 ) -> TaskWorker:
     """Restore live files from chosen backups; ``done`` carries the count restored.
 
     Pre-validates that every chosen backup still exists before restoring
-    anything, so a stale dialog cannot half-apply.
+    anything, so a stale dialog cannot half-apply.  With ``mods_dir`` and
+    ``store_dir`` both given, texcoord-upgrade markers whose live buffer was
+    restored byte-identical to its pre-upgrade content are pruned afterward,
+    as are blend-remap markers restored to their pre-remap bytes, and empty
+    store folders left by the consumed backups are pruned as well.
     """
 
     def job(log: LogFn) -> int:
         missing = [str(b) for _, b in choices if not Path(b).exists()]
         if missing:
             raise ValueError("backup no longer exists: " + "; ".join(missing))
-        return revert_backups(choices, log=log)
+        restored = revert_backups(choices, log=log)
+        if mods_dir is not None and store_dir is not None:
+            pruned = prune_texcoord_markers(
+                store_dir, Path(mods_dir), [live for live, _backup in choices]
+            )
+            if pruned:
+                log(f"Texcoord-upgrade markers cleared: {pruned} reverted buffer(s)")
+            pruned_blends = prune_blend_markers(
+                store_dir, Path(mods_dir), [live for live, _backup in choices]
+            )
+            if pruned_blends:
+                log(f"Blend-remap markers cleared: {pruned_blends} reverted buffer(s)")
+            pruned_folders = prune_empty_store_folders(store_dir, Path(mods_dir))
+            if pruned_folders:
+                log(f"Empty backup folders cleared: {pruned_folders} folder(s)")
+        return restored
 
     return TaskWorker(job, log_kwarg="log", parent=parent)
 
@@ -473,6 +553,11 @@ def rename_folder_worker(
         )
         if rewritten:
             log(f"Blend-remap markers updated: {rewritten} key(s)")
+        texcoord_rewritten = rewrite_texcoord_state_keys(
+            default_backups_dir(), mods, canonical_old, canonical_new
+        )
+        if texcoord_rewritten:
+            log(f"Texcoord-upgrade markers updated: {texcoord_rewritten} key(s)")
         return new
 
     return TaskWorker(job, log_kwarg="log", parent=parent)
@@ -523,6 +608,11 @@ def delete_folder_worker(
         )
         if removed_markers:
             log(f"Blend-remap markers removed: {removed_markers} key(s)")
+        removed_texcoord_markers = remove_texcoord_state_keys(
+            default_backups_dir(), mods, canonical
+        )
+        if removed_texcoord_markers:
+            log(f"Texcoord-upgrade markers removed: {removed_texcoord_markers} key(s)")
         return old, file_count
 
     return TaskWorker(job, log_kwarg="log", parent=parent)

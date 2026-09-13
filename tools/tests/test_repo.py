@@ -24,36 +24,71 @@ def test_project_root_frozen_resolves_next_to_executable(tmp_path, monkeypatch):
 
 
 def test_repo_variant_table():
-    assert set(repo.REPO_VARIANTS) == {"2048p", "1024p"}
+    assert set(repo.REPO_VARIANTS) == {"2048p", "1024p", "fix_tool"}
     assert repo.DEFAULT_VARIANT == "2048p"
+    assert repo.hash_variants() == ("2048p", "1024p")
     high = repo.REPO_VARIANTS["2048p"]
     low = repo.REPO_VARIANTS["1024p"]
-    assert (high.key, high.repo_url, high.dir_name, high.repo_name, high.branch) == (
-        "2048p",
-        repo.REPO_URL,
-        "zzz-model-hash",
-        "ZZZ-Model-Hash",
-        "master",
-    )
-    assert (low.key, low.repo_url, low.dir_name, low.repo_name, low.branch) == (
+    dump = repo.REPO_VARIANTS["fix_tool"]
+    assert (
+        high.key,
+        high.repo_url,
+        high.dir_name,
+        high.repo_name,
+        high.branch,
+        high.kind,
+    ) == ("2048p", repo.REPO_URL, "zzz-model-hash", "ZZZ-Model-Hash", "master", "hash")
+    assert (
+        low.key,
+        low.repo_url,
+        low.dir_name,
+        low.repo_name,
+        low.branch,
+        low.kind,
+    ) == (
         "1024p",
         repo.LOWVARM_REPO_URL,
         "zzz-model-hash_lowvarm",
         "ZZZ-Model-Hash_LowVarm",
         "main",
+        "hash",
+    )
+    assert (
+        dump.key,
+        dump.repo_url,
+        dump.dir_name,
+        dump.repo_name,
+        dump.branch,
+        dump.kind,
+    ) == (
+        "fix_tool",
+        repo.FIX_TOOL_REPO_URL,
+        "zzz-model-fix-tool",
+        "ZZZ-Model-Fix-Tool",
+        "main",
+        "dump",
     )
     assert repo.LOWVARM_REPO_URL.endswith("ZZZ-Model-Hash_LowVarm.git")
+    assert repo.FIX_TOOL_REPO_URL.endswith("ZZZ-Model-Fix-Tool.git")
 
 
 def test_default_cache_dir_per_variant():
     high = repo.default_cache_dir("2048p")
     low = repo.default_cache_dir("1024p")
+    dump = repo.default_cache_dir("fix_tool")
     assert str(high).endswith(str(Path("data") / "zzz-model-hash"))
     assert str(low).endswith(str(Path("data") / "zzz-model-hash_lowvarm"))
-    assert high.parent == low.parent
+    assert str(dump).endswith(str(Path("data") / "zzz-model-fix-tool"))
+    assert high.parent == low.parent == dump.parent
     assert high == repo.default_cache_dir()
     with pytest.raises(KeyError):
         repo.default_cache_dir("999p")
+
+
+def test_archive_url_fix_tool_points_at_main_branch():
+    url = repo._archive_url("fix_tool")
+    assert "codeload.github.com" in url
+    assert "ZZZ-Model-Fix-Tool/zip/refs/heads/main" in url
 
 
 def test_characters_dir_autodetect(tmp_path):
@@ -253,6 +288,50 @@ def test_extract_archive_rejects_escaping_members(tmp_path):
         zf.writestr("ZZZ-Model-Hash-master/../../evil.txt", b"boom")
     with pytest.raises(repo.RepoError, match="escapes"):
         repo._extract_archive(buffer.getvalue(), tmp_path / "out")
+
+
+def test_extract_archive_prunes_subfolder(tmp_path):
+    archive = _archive_bytes(
+        "ZZZ-Model-Fix-Tool-main",
+        {
+            "版本修复工具/dump/珂蕾妲-脸/珂蕾妲-脸.json": b"{}",
+            "版本修复工具/dump/说明.txt": b"readme",
+            "版本修复工具/zzz_fix.中文版.exe": b"exe",
+            "RabbitFX修复工具/other.exe": b"junk",
+        },
+    )
+    destination = tmp_path / "out"
+    repo._extract_archive(archive, destination, subfolder="版本修复工具/dump")
+    assert (destination / "珂蕾妲-脸" / "珂蕾妲-脸.json").read_bytes() == b"{}"
+    assert (destination / "说明.txt").read_bytes() == b"readme"
+    assert not (destination / "版本修复工具").exists()
+    assert not any(member.suffix == ".exe" for member in destination.rglob("*"))
+
+
+def test_ensure_repo_fix_tool_extracts_only_dump_subfolder(tmp_path, monkeypatch):
+    def fake_fetch(url, timeout=repo._TIMEOUT_SECONDS):
+        assert "ZZZ-Model-Fix-Tool" in str(url)
+        assert "refs/heads/main" in str(url)
+        assert timeout == repo._TIMEOUT_SECONDS
+        return _archive_bytes(
+            "ZZZ-Model-Fix-Tool-main",
+            {
+                "版本修复工具/dump/扳机-脸/扳机-脸.json": b"{}",
+                "版本修复工具/zzz_fix.中文版.exe": b"exe",
+                "版本修复工具/依赖包勿删/junk.dll": b"dll",
+            },
+        ), '"etag-dump"'
+
+    monkeypatch.setattr(repo, "_fetch_url", fake_fetch)
+    monkeypatch.setattr(repo, "_head_sha", lambda variant: "feedbeef")
+
+    target = tmp_path / "dump"
+    assert repo.ensure_repo("fix_tool", cache_dir=target) == target
+    assert (target / "扳机-脸" / "扳机-脸.json").read_bytes() == b"{}"
+    assert not (target / "版本修复工具").exists()
+    assert repo.repo_head(target) == "feedbeef"
+    assert repo._read_marker(target).get("etag") == '"etag-dump"'
+    assert not list(tmp_path.glob("*-staging-*"))
 
 
 def test_repo_head_defaults_to_empty(tmp_path):

@@ -110,3 +110,23 @@ def _index_texture_hashes(
         reverse.setdefault(hash_value.lower(), []).append(
             HashRef(character, component_name, role.lower())
         )
+
+
+def is_face_component(name: str) -> bool:
+    """True when a component name denotes the face: a 脸 (face) or leading "Face"."""
+    return "脸" in name or name.lower().startswith("face")
+
+
+def face_texcoord_hashes(db: CharacterDB) -> set[str]:
+    """Current face-texcoord hashes from the character tables.
+
+    A hash qualifies when any of its usages is a face-named component's texcoord
+    field (either the "Texcoord" or "texcoord_vb" field spelling).
+    """
+    found: set[str] = set()
+    for hash_value, refs in db.reverse.items():
+        for ref in refs:
+            if ref.role in ("texcoord", "texcoord_vb") and is_face_component(ref.component):
+                found.add(hash_value.lower())
+                break
+    return found

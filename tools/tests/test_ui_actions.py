@@ -101,6 +101,23 @@ def test_scope_has_backups_dir_scope_nested_backup_is_true(tmp_path):
     assert main_window._scope_has_backups(mods, store, mod)
 
 
+def test_scope_has_backups_dir_scope_ignores_empty_subfolders(tmp_path):
+    """Empty store subfolders no longer keep the revert action alive: the
+    directory scope only counts when a real backup file exists in the mirror."""
+    mods = tmp_path / "mods"
+    mod = mods / "mod"
+    add_mod_file(mod, "char.ini")
+    store = tmp_path / "store"
+
+    mirror = store_folder_for_mod(store, mods, mod)
+    mirror.mkdir(parents=True)
+    (mirror / "sub").mkdir()
+    assert not main_window._scope_has_backups(mods, store, mod)
+
+    add_backup(mirror / "sub", "char.ini")
+    assert main_window._scope_has_backups(mods, store, mod)
+
+
 def test_enabled_view_excludes_disabled_mod():
     """Show enabled only hides a disabled mod row outright."""
     assert not main_window._enabled_view_includes(

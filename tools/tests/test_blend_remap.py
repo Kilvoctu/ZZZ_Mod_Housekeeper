@@ -7,14 +7,17 @@ import struct
 
 import pytest
 
+from tools import blend_remap as blend_remap_module
 from tools.blend_remap import (
     BlendTables,
     BlendTarget,
     apply_remap,
+    blend_marker_kind,
     blend_remaps_path,
     blend_state_path,
     find_targets,
     load_blend_remaps,
+    prune_blend_markers,
     remap_bytes,
     remove_blend_state_keys,
     resolve_blend_table,
@@ -108,11 +111,17 @@ def test_load_blend_remaps_pins_shipped_tables():
         "da54a57a": 4,
         "93b69961": 59,
         "3841a909": 20,
+        "3d7e53cf": 33,
+        "e42171df": 65,
+        "d06a9206": 61,
     }
     assert tables.position_to_blend == {
         "d16f6790": "da54a57a",
         "0929171b": "93b69961",
         "11fbd4a3": "3841a909",
+        "ff36809b": "3d7e53cf",
+        "33a09cfe": "e42171df",
+        "82e7c056": "d06a9206",
     }
     body = tables.mappings["93b69961"]
     assert body[68] == 127
@@ -144,6 +153,25 @@ def test_load_blend_remaps_rejects_malformed(tmp_path):
     )
     with pytest.raises(ValueError):
         load_blend_remaps(non_decimal)
+
+
+def test_load_blend_remaps_derived_tables_and_aliases():
+    tables = load_blend_remaps()
+    assert len(tables.mappings["3d7e53cf"]) == 33
+    assert len(tables.mappings["e42171df"]) == 65
+    assert len(tables.mappings["d06a9206"]) == 61
+    assert resolve_blend_table("ff36809b", tables) == (
+        "3d7e53cf",
+        tables.mappings["3d7e53cf"],
+    )
+    assert resolve_blend_table("33a09cfe", tables) == (
+        "e42171df",
+        tables.mappings["e42171df"],
+    )
+    assert resolve_blend_table("82e7c056", tables) == (
+        "d06a9206",
+        tables.mappings["d06a9206"],
+    )
 
 
 def test_resolve_blend_table_direct_alias_and_miss():
@@ -294,6 +322,8 @@ def test_apply_remap_round_trip_backup_marker_and_idempotence(tmp_path):
     assert set(marker) == {"x.buf"}
     entry = marker["x.buf"]
     assert entry["hash"] == "aabbccdd"
+    assert entry["action"] == "table"
+    assert entry["source"] == ""
     assert entry["after"] == hashlib.sha256(remapped).hexdigest()
     assert entry["before"] == hashlib.sha256(original).hexdigest()
     assert isinstance(entry["stamp"], int)
@@ -537,3 +567,114 @@ def test_remove_blend_state_keys_no_match_leaves_file_untouched(tmp_path):
     assert remove_blend_state_keys(store, mods, "Ghost") == 0
 
     assert state_path.read_bytes() == raw
+
+
+def test_blend_marker_kind_distinguishes_action_and_legacy(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "legacy.buf": {"hash": "aabbccdd", "stamp": 1},
+                "vote.buf": {"action": "vote", "hash": "ff36809b", "stamp": 2},
+                "table.buf": {"action": "table", "hash": "aabbccdd", "stamp": 3},
+                "junk.buf": "not-a-marker",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert blend_marker_kind(store, mods, mods / "legacy.buf") == "blend remap (table)"
+    assert blend_marker_kind(store, mods, mods / "vote.buf") == "blend remap (vote)"
+    assert blend_marker_kind(store, mods, mods / "table.buf") == "blend remap (table)"
+    assert blend_marker_kind(store, mods, mods / "ghost.buf") is None
+    assert blend_marker_kind(store, mods, mods / "junk.buf") is None
+
+
+def test_prune_blend_markers_drops_only_reverted_buffers(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    original = _record((1.0, 0.0, 0.0, 0.0), (5, 1, 2, 3))
+    before = hashlib.sha256(original).hexdigest()
+    (mods / "same.buf").write_bytes(original)  # reverted: matches "before" again
+    (mods / "diff.buf").write_bytes(_record((0.5, 0.5, 0.0, 0.0), (9, 1, 2, 3)))
+    # gone.buf is seeded but has no live file; spare.buf was also reverted but
+    # sits outside the reverted batch handed to prune; m.ini is not a .buf.
+    (mods / "m.ini").write_text(_X_SECTION_INI, encoding="utf-8")
+    spare = _record((0.0, 1.0, 0.0, 0.0), (5, 1, 2, 3))
+    (mods / "spare.buf").write_bytes(spare)
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {
+                "same.buf": {"before": before},
+                "diff.buf": {"before": before},
+                "gone.buf": {"before": before},
+                "spare.buf": {"before": hashlib.sha256(spare).hexdigest()},
+                "m.ini": {
+                    "before": hashlib.sha256(
+                        (mods / "m.ini").read_bytes()
+                    ).hexdigest()
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert prune_blend_markers(
+        store,
+        mods,
+        [mods / "same.buf", mods / "diff.buf", mods / "gone.buf", mods / "m.ini"],
+    ) == 1
+
+    reloaded = json.loads(state_path.read_text(encoding="utf-8"))
+    assert set(reloaded) == {"diff.buf", "gone.buf", "spare.buf", "m.ini"}
+
+
+def test_prune_blend_markers_writes_state_once(tmp_path, monkeypatch):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    data = _record((1.0, 0.0, 0.0, 0.0), (5, 1, 2, 3))
+    for name in ("a.buf", "b.buf"):
+        (mods / name).write_bytes(data)
+    before = {"before": hashlib.sha256(data).hexdigest()}
+    state_path.write_text(
+        json.dumps({"a.buf": dict(before), "b.buf": dict(before)}),
+        encoding="utf-8",
+    )
+
+    original_write = blend_remap_module.write_blend_state
+    writes: list[dict] = []
+
+    def counting_write(store_dir, mods_dir, persisted):
+        writes.append(dict(persisted))
+        original_write(store_dir, mods_dir, persisted)
+
+    monkeypatch.setattr(blend_remap_module, "write_blend_state", counting_write)
+
+    assert prune_blend_markers(store, mods, [mods / "a.buf", mods / "b.buf"]) == 2
+    assert len(writes) == 1
+    assert json.loads(state_path.read_text(encoding="utf-8")) == {}
+    assert prune_blend_markers(store, mods, [mods / "a.buf", mods / "b.buf"]) == 0
+    assert len(writes) == 1
+
+
+def test_prune_blend_markers_without_state_is_noop(tmp_path):
+    mods = tmp_path / "mods"
+    mods.mkdir()
+    store = tmp_path / "store"
+    buf = mods / "x.buf"
+    buf.write_bytes(_record((1.0, 0.0, 0.0, 0.0), (5, 1, 2, 3)))
+
+    assert prune_blend_markers(store, mods, [buf]) == 0
+
+    assert not blend_state_path(store, mods).exists()
+    assert not store.exists()

@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -14,13 +15,17 @@ from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 from tools import importer, presets, promoted, state
 from tools.backups import store_folder_for_mod
 from tools.blend_remap import blend_state_path
-from tools.fixer import FixerData
+from tools.dumpdata import DumpData, DumpLayout
+from tools.fixer import FixerData, empty_fixer_data
 from tools.repo import DEFAULT_VARIANT, RepoError
+from tools.texcoord_upgrade import texcoord_state_path
 from tools.ui.worker import (
     delete_folder_worker,
+    fix_mod_worker,
     import_archive_worker,
     load_all_data_worker,
     rename_folder_worker,
+    revert_worker,
     update_data_worker,
 )
 
@@ -166,16 +171,16 @@ def test_load_all_data_worker_falls_back_without_local_data(tmp_path, monkeypatc
     result = holder["result"]
     assert isinstance(result, tuple) and len(result) == 4
     caches, datasets, heads, structure = result
-    assert set(caches) == {"2048p", "1024p"}
+    assert set(caches) == {"2048p", "1024p", "fix_tool"}
     assert set(datasets) == {DEFAULT_VARIANT}
     fallback = datasets[DEFAULT_VARIANT]
     assert isinstance(fallback, FixerData)
     assert fallback.chains == {}
     assert fallback.entries == []
-    assert set(heads) == {"2048p", "1024p"}
+    assert set(heads) == {"2048p", "1024p", "fix_tool"}
     assert all(head == "" for head in heads.values())
     assert structure is not None
-    assert any("No hash data at all" in message for message in logs)
+    assert any("No upstream data loaded" in message for message in logs)
 
 
 def test_update_data_worker_offline_returns_fallback(tmp_path, monkeypatch):
@@ -206,7 +211,7 @@ def test_update_data_worker_offline_returns_fallback(tmp_path, monkeypatch):
         "Could not update" in message and "offline" in message
         for message in logs
     )
-    assert any("No hash data at all" in message for message in logs)
+    assert any("No upstream data loaded" in message for message in logs)
 
 
 def delete_setup(
@@ -371,3 +376,187 @@ def test_delete_folder_worker_removes_promoted_key(tmp_path, monkeypatch):
     assert holder["error"] is None
     assert promoted.load_promoted(presets_dir) == {"Stays": "keep.png"}
     assert any("Preview images removed" in message for message in logs)
+
+
+def texcoord_revert_setup(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """mods/Mod/face.buf, a store backup beside it holding the same bytes, and a convert marker."""
+    mods = tmp_path / "mods"
+    store = tmp_path / "store"
+    live = mods / "Mod" / "face.buf"
+    live.parent.mkdir(parents=True)
+    payload = b"pre-upgrade face texcoord bytes"
+    live.write_bytes(payload)
+    state_path = texcoord_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {"Mod/face.buf": {"action": "convert", "before": sha256(payload).hexdigest()}}
+        ),
+        encoding="utf-8",
+    )
+    backup = (
+        store_folder_for_mod(store, mods, live.parent)
+        / "face.buf -- 2026-01-01 00.00.00.bak"
+    )
+    backup.parent.mkdir(parents=True)
+    backup.write_bytes(payload)
+    return mods, store, live, backup
+
+
+def test_revert_worker_prunes_restored_texcoord_markers(tmp_path):
+    mods, store, live, backup = texcoord_revert_setup(tmp_path)
+
+    worker = revert_worker([(live, backup)], mods_dir=mods, store_dir=store)
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    assert holder["result"] == 1
+    assert json.loads(texcoord_state_path(store, mods).read_text(encoding="utf-8")) == {}
+    assert any("Texcoord-upgrade markers cleared: 1" in line for line in logs)
+
+
+def test_revert_worker_without_dirs_keeps_texcoord_markers(tmp_path):
+    mods, store, live, backup = texcoord_revert_setup(tmp_path)
+
+    holder = run_worker(revert_worker([(live, backup)]))
+
+    assert holder["error"] is None
+    assert holder["result"] == 1
+    assert "Mod/face.buf" in json.loads(
+        texcoord_state_path(store, mods).read_text(encoding="utf-8")
+    )
+
+
+def blend_revert_setup(tmp_path: Path) -> tuple[Path, Path, Path, Path]:
+    """mods/Mod/blend.buf, a store backup beside it holding the same bytes, and a vote marker."""
+    mods = tmp_path / "mods"
+    store = tmp_path / "store"
+    live = mods / "Mod" / "blend.buf"
+    live.parent.mkdir(parents=True)
+    payload = b"pre-remap blend bytes"
+    live.write_bytes(payload)
+    state_path = blend_state_path(store, mods)
+    state_path.parent.mkdir(parents=True)
+    state_path.write_text(
+        json.dumps(
+            {"Mod/blend.buf": {"action": "vote", "before": sha256(payload).hexdigest()}}
+        ),
+        encoding="utf-8",
+    )
+    backup = (
+        store_folder_for_mod(store, mods, live.parent)
+        / "blend.buf -- 2026-01-01 00.00.00.bak"
+    )
+    backup.parent.mkdir(parents=True)
+    backup.write_bytes(payload)
+    return mods, store, live, backup
+
+
+def test_revert_worker_prunes_restored_blend_markers(tmp_path, monkeypatch):
+    mods, store, live, backup = blend_revert_setup(tmp_path)
+    monkeypatch.setattr("tools.ui.worker.default_backups_dir", lambda: store)
+
+    worker = revert_worker([(live, backup)], mods_dir=mods, store_dir=store)
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    assert holder["result"] == 1
+    assert json.loads(blend_state_path(store, mods).read_text(encoding="utf-8")) == {}
+    assert any("Blend-remap markers cleared: 1" in line for line in logs)
+
+
+def test_revert_worker_prunes_empty_backup_folders(tmp_path, monkeypatch):
+    mods, store, live, backup = blend_revert_setup(tmp_path)
+    monkeypatch.setattr("tools.ui.worker.default_backups_dir", lambda: store)
+
+    worker = revert_worker([(live, backup)], mods_dir=mods, store_dir=store)
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    assert holder["result"] == 1
+    assert not store_folder_for_mod(store, mods, mods / "Mod").exists()
+    assert any("Empty backup folders cleared: 1 folder(s)" in line for line in logs)
+    # _blend_remaps.json keeps the store root non-empty, so the root survives.
+    assert blend_state_path(store, mods).is_file()
+    assert blend_state_path(store, mods).parent.is_dir()
+
+
+def test_fix_mod_worker_applies_blend_vote_remap(tmp_path, monkeypatch):
+    mods = tmp_path / "mods"
+    mod = mods / "Mod"
+    mod.mkdir(parents=True)
+    (mod / "m.ini").write_bytes(
+        b"[TextureOverrideModBlend]\r\n"
+        b"hash = ff36809c\r\n"
+        b"handling = skip\r\n"
+        b"vb0 = ResourceModPos\r\n"
+        b"vb2 = ResourceModBlend\r\n"
+        b"draw = 2, 0\r\n"
+        b"\r\n"
+        b"[ResourceModPos]\r\n"
+        b"type = Buffer\r\n"
+        b"stride = 40\r\n"
+        b"filename = position.buf\r\n"
+        b"\r\n"
+        b"[ResourceModBlend]\r\n"
+        b"type = Buffer\r\n"
+        b"stride = 32\r\n"
+        b"filename = blend.buf\r\n"
+    )
+    mod_position = b"".join(v.to_bytes(4, "little") * 10 for v in (0, 1))
+    mod_blend = b"".join(
+        b"\x00" * 16
+        + b"".join((10 * v + slot).to_bytes(4, "little") for slot in range(4))
+        for v in (0, 1)
+    )
+    (mod / "position.buf").write_bytes(mod_position)
+    (mod / "blend.buf").write_bytes(mod_blend)
+    dump = tmp_path / "dump"
+    dump.mkdir()
+    dump_blend = b"".join(
+        b"\x00" * 16
+        + b"".join((10 * v + 5 + slot).to_bytes(4, "little") for slot in range(4))
+        for v in (0, 1)
+    )
+    (dump / "d-pos.buf").write_bytes(mod_position)
+    (dump / "d-blend.buf").write_bytes(dump_blend)
+    dumps = DumpData(
+        layouts={
+            ("body", "mesh", "position"): DumpLayout(40, "vb0", "d-pos.buf"),
+            ("body", "mesh", "blend"): DumpLayout(32, "vb2", "d-blend.buf"),
+        },
+        current_hashes={("body", "mesh", "position"): "ff36809c"},
+        binaries={
+            ("body", "mesh", "position"): dump / "d-pos.buf",
+            ("body", "mesh", "blend"): dump / "d-blend.buf",
+        },
+    )
+    data = empty_fixer_data()
+    data.dumps = dumps
+    store = tmp_path / "store"
+    monkeypatch.setattr("tools.ui.worker.default_backups_dir", lambda: store)
+
+    worker = fix_mod_worker(mods, mod, {DEFAULT_VARIANT: data})
+    logs: list[str] = []
+    worker.log.connect(logs.append)
+    holder = run_worker(worker)
+
+    assert holder["error"] is None
+    result = holder["result"]
+    assert isinstance(result, tuple) and len(result) == 3
+    variant, plans, written = result
+    assert variant == DEFAULT_VARIANT
+    assert plans == []
+    assert written == 0
+    assert (mod / "blend.buf").read_bytes() == dump_blend
+    markers = json.loads(
+        blend_state_path(store, mods).read_text(encoding="utf-8")
+    )
+    assert markers["Mod/blend.buf"]["action"] == "vote"
+    assert any("remapped blend indices (vote)" in line for line in logs)

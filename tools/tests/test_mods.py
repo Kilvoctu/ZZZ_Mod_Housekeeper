@@ -1,5 +1,6 @@
 """Tests for tools.mods: mod tree building and per-mod version analysis."""
 
+from collections.abc import Set
 from copy import deepcopy
 from pathlib import Path
 
@@ -8,7 +9,9 @@ from PySide6.QtGui import QColor
 import pytest
 
 from tools import changelog, mods, repo
+from tools.bufferbinds import BufferBind
 from tools.characters import CharacterDB, HashRef
+from tools.dumpdata import DumpData, DumpLayout
 from tools.fixer import (
     FixerData,
     collect_texture_override_hashes,
@@ -1849,13 +1852,15 @@ def make_node(name, kind, version=None, children=()):
     )
 
 
-def version_counts(outdated=0, current=0, unknown=0):
+def version_counts(outdated=0, current=0, unknown=0, broken=0, structural=0):
     """ModVersion carrying only the given hash counts (labels are dummies)."""
     return mods.ModVersion(
         current_count=current,
         outdated_count=outdated,
         unknown_count=unknown,
         total=outdated + current + unknown,
+        broken_count=broken,
+        structural_count=structural,
     )
 
 
@@ -1868,7 +1873,7 @@ def test_aggregate_updates_nested_outdated():
             make_node("Stale", "mod", version=version_counts(outdated=1, current=1)),
         ],
     )
-    assert mods.aggregate_updates(category) == "outdated"
+    assert mods.aggregate_updates(category) == "old hash"
 
     subfolder = make_node(
         "body",
@@ -1883,7 +1888,7 @@ def test_aggregate_updates_nested_outdated():
             subfolder,
         ],
     )
-    assert mods.aggregate_updates(nested) == "outdated"
+    assert mods.aggregate_updates(nested) == "old hash"
 
 
 def test_aggregate_updates_nested_current_with_unknown():
@@ -1935,7 +1940,7 @@ def test_aggregate_updates_transitive_through_versionless_dirs():
             )
         ],
     )
-    assert mods.aggregate_updates(outdated) == "outdated"
+    assert mods.aggregate_updates(outdated) == "old hash"
 
 
 def test_aggregate_updates_structural_only_subtree():
@@ -1951,7 +1956,7 @@ def test_aggregate_updates_structural_only_subtree():
             ),
         ],
     )
-    assert mods.aggregate_updates(category) == "structural"
+    assert mods.aggregate_updates(category) == "sections"
 
 
 def test_aggregate_updates_outdated_beats_structural():
@@ -1967,7 +1972,181 @@ def test_aggregate_updates_outdated_beats_structural():
             make_node("Stale", "mod", version=version_counts(outdated=1)),
         ],
     )
-    assert mods.aggregate_updates(category) == "outdated"
+    assert mods.aggregate_updates(category) == "old hash"
+
+
+def test_aggregate_updates_broken_buffers_beat_old_hash_and_sections():
+    mixed = make_node(
+        "Category",
+        "category",
+        children=[
+            make_node(
+                "Broken",
+                "mod",
+                version=version_counts(outdated=3, broken=1, structural=2),
+            )
+        ],
+    )
+    assert mods.aggregate_updates(mixed) == "buffers"
+
+    broken_only = make_node(
+        "Category",
+        "category",
+        children=[make_node("Broken", "mod", version=version_counts(broken=1))],
+    )
+    assert mods.aggregate_updates(broken_only) == "buffers"
+
+
+def test_aggregate_updates_broken_after_outdated_sibling():
+    # Walk pops LIFO, so Broken is listed first and Stale is reached first;
+    # an outdated hit must not end the walk before the deeper broken hit.
+    category = make_node(
+        "Category",
+        "category",
+        children=[
+            make_node("Broken", "mod", version=version_counts(broken=1)),
+            make_node("Stale", "mod", version=version_counts(outdated=1)),
+        ],
+    )
+    assert mods.aggregate_updates(category) == "buffers"
+
+
+def bind_data(face_hashes: Set[str] = frozenset()):
+    """FixerData whose dumps describe the chara/body component (ib 11111111).
+
+    Current hashes mirror the real JuFufu face dump: a blend hash a mod
+    section can bind from two slots plus distinct position/texcoord hashes.
+    """
+    dumps = DumpData(
+        layouts={
+            ("chara", "body", "position"): DumpLayout(48, "vb0", "p.buf"),
+            ("chara", "body", "texcoord"): DumpLayout(48, "vb1", "t.buf"),
+            ("chara", "body", "blend"): DumpLayout(32, "vb2", "b.buf"),
+        },
+        current_hashes={
+            ("chara", "body", "position"): "ed92b94c",
+            ("chara", "body", "texcoord"): "768c9ec4",
+            ("chara", "body", "blend"): "512615d6",
+        },
+        ibs={("chara", "body"): "11111111"},
+    )
+    return FixerData(
+        chains={},
+        ib_index_changes={},
+        db=CharacterDB(),
+        entries=[],
+        face_texcoord_hashes=frozenset(face_hashes),
+        dumps=dumps,
+    )
+
+
+def make_bind(slot, hash_value="11111111", stride=None, exists=True):
+    """BufferBind for one chara/body slot (shipped binary named after the slot)."""
+    filename = f"{slot}.buf"
+    return BufferBind(
+        hash=hash_value,
+        slot=slot,
+        resource="ResourceBody",
+        stride=stride,
+        filename=filename,
+        path=Path(filename),
+        exists=exists,
+    )
+
+
+def test_bind_is_broken_matrix():
+    covered = bind_data()
+    face_data = bind_data({"22222222"})
+
+    # A declared binary missing from disk breaks vertex and index binds alike.
+    assert mods._bind_is_broken(make_bind("vb0", exists=False), covered) is True
+    assert mods._bind_is_broken(make_bind("ib", exists=False), covered) is True
+    # A present index bind never breaks on stride (ib has no dump role).
+    assert mods._bind_is_broken(make_bind("ib", stride=48), covered) is False
+    # Dump-covered vertex binds break only when their stride went stale.
+    assert mods._bind_is_broken(make_bind("vb0", stride=40), covered) is True
+    assert mods._bind_is_broken(make_bind("vb0", stride=48), covered) is False
+    # Dump-uncovered texcoord binds fall back to the legacy 36-byte face gate.
+    assert (
+        mods._bind_is_broken(make_bind("vb1", "22222222", stride=36), face_data) is True
+    )
+    assert (
+        mods._bind_is_broken(make_bind("vb0", "22222222", stride=36), face_data) is False
+    )
+    assert (
+        mods._bind_is_broken(make_bind("vb1", "99999999", stride=36), face_data) is False
+    )
+    # A current-hash match only counts for the bind's own role: the JuFufu
+    # face section binds vb0 (position, 40) on the dump's blend hash, which
+    # the role filter leaves dump-uncovered and therefore undiagnosed.
+    assert (
+        mods._bind_is_broken(make_bind("vb0", "512615d6", stride=40), covered) is False
+    )
+    # The blend hash still stride-compares for the role that owns it.
+    assert (
+        mods._bind_is_broken(make_bind("vb2", "512615d6", stride=28), covered) is True
+    )
+    # A present vb bind with an undeclared stride is never diagnosed.
+    assert mods._bind_is_broken(make_bind("vb0", stride=None), covered) is False
+
+    # End-to-end flavor: the real JuFufu section shape -- vb2 (32) and vb0
+    # (40) share the blend hash, vb1 (48) carries the texcoord hash; exactly
+    # zero binds diagnose broken.
+    jufufu_section = [
+        make_bind("vb2", "512615d6", stride=32),
+        make_bind("vb0", "512615d6", stride=40),
+        make_bind("vb1", "768c9ec4", stride=48),
+    ]
+    assert not any(mods._bind_is_broken(bind, covered) for bind in jufufu_section)
+
+
+BIND_INI = "\r\n".join(
+    [
+        "[TextureOverrideBody]",
+        "hash = 11111111",
+        "vb0 = ResourceBodyPosition",
+        "vb1 = ResourceBodyTexcoord",
+        "vb2 = ResourceBodyBlend",
+        "",
+        "[ResourceBodyPosition]",
+        "type = Buffer",
+        "stride = 48",
+        "filename = p.buf",
+        "",
+        "[ResourceBodyTexcoord]",
+        "type = Buffer",
+        "stride = 36",
+        "filename = t.buf",
+        "",
+        "[ResourceBodyBlend]",
+        "type = Buffer",
+        "stride = 64",
+        "filename = p.buf",
+    ]
+) + "\r\n"
+
+
+def test_analyze_mods_counts_broken_buffers_end_to_end(tmp_path):
+    """Broken binds roll up into the file's, mod's and summary's broken counts.
+
+    Only the position binary ships: vb1's t.buf is missing from disk and vb2's
+    block reuses p.buf with a stale stride (64 vs the dump's 32), so exactly
+    two binds break while vb0 (48) stays current.
+    """
+    root = tmp_path / "mods"
+    mod = root / "BindMod"
+    mod.mkdir(parents=True)
+    (mod / "m.ini").write_bytes(BIND_INI.encode("utf-8"))
+    (mod / "p.buf").write_bytes(b"\x00\x01\x02\x03")
+
+    tree, summary = mods.analyze_mods(root, bind_data())
+
+    mod_node = by_name(tree, "BindMod")
+    file_node = by_name(tree, "m.ini")
+    assert version_of(file_node).broken_count == 2
+    assert version_of(mod_node).broken_count == 2
+    assert summary.broken == 1
+    assert mods.aggregate_updates(mod_node) == "buffers"
 
 
 def test_analyze_structural_breakage_counts(tmp_path):
@@ -2000,7 +2179,7 @@ def test_analyze_structural_breakage_counts(tmp_path):
     mod_node_version = version_of(mod_node)
     assert mod_node_version.structural_count == 1
     assert mod_node_version.outdated_count == 0
-    assert aggregate_updates(tree) == "structural"
+    assert aggregate_updates(tree) == "sections"
     file_node = mod_node.children[0]
     assert (file_node.kind, version_of(file_node).structural_count) == ("file", 1)
     assert summary.structural == 1
@@ -2022,7 +2201,7 @@ def test_analyze_structural_breakage_counts(tmp_path):
 
 def test_updates_text_fires_for_structural_only():
     version = ModVersion(current_count=2, total=2, structural_count=1)
-    assert updates_text(version, as_mod=True) == "structural"
+    assert updates_text(version, as_mod=True) == "sections"
     assert updates_text(ModVersion(current_count=2, total=2), as_mod=True) == "up to date"
     assert updates_color(version, as_mod=True) == QColor("#808080")
     assert "1 structural" in hashes_text(version, as_mod=True)
@@ -2030,13 +2209,13 @@ def test_updates_text_fires_for_structural_only():
 
 def test_updates_text_outdated_beats_structural():
     version = ModVersion(current_count=1, outdated_count=2, total=3, structural_count=1)
-    assert updates_text(version, as_mod=True) == "outdated"
+    assert updates_text(version, as_mod=True) == "old hash"
     assert updates_color(version, as_mod=True) == QColor("#c47f00")
 
 
 def test_updates_text_structural_file_row():
     version = ModVersion(current_count=1, total=1, structural_count=1)
-    assert updates_text(version, as_mod=False) == "structural"
+    assert updates_text(version, as_mod=False) == "sections"
     assert updates_text(ModVersion(), as_mod=False) == ""
 
 

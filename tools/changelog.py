@@ -154,14 +154,74 @@ def parse_changelog(text: str) -> list[ChangeEntry]:
     return result
 
 
+def decode_changelog(data: bytes) -> str:
+    """Decode raw changelog bytes (utf-8 with BOM, falling back to gbk)."""
+    try:
+        return data.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        return data.decode("gbk", errors="replace")
+
+
 def parse_changelog_file(path: Path) -> list[ChangeEntry]:
     """Read the changelog file (utf-8, falling back to gbk) and parse it."""
-    data = Path(path).read_bytes()
-    try:
-        text = data.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        text = data.decode("gbk", errors="replace")
-    return parse_changelog(text)
+    return parse_changelog(decode_changelog(Path(path).read_bytes()))
+
+
+def parse_face_texcoord_transitions_file(path: Path) -> dict[str, str]:
+    """Read the changelog file and map face texcoord from-hashes to current hashes."""
+    return parse_face_texcoord_transitions(decode_changelog(Path(path).read_bytes()))
+
+
+def parse_face_texcoord_transitions(text: str) -> dict[str, str]:
+    """Map from_hash -> to_hash for texcoord child lines under face-labeled IB lines.
+
+    A child line belongs to the nearest preceding "IB: ...（label）" line of its
+    character group; only labels containing 脸 (face) qualify, and version
+    headers and character groups reset the context. The first edge per from-hash
+    wins (the file is newest-first, so that is the most recent transition).
+    """
+    transitions: dict[str, str] = {}
+    label = ""
+    in_trailer = False
+    for raw in text.splitlines():
+        stripped = raw.strip()
+        if not stripped or in_trailer:
+            continue
+        if set(stripped) <= {"="} or set(stripped) <= {"-"}:
+            if "=" not in stripped:
+                in_trailer = True
+            continue
+        if stripped.startswith("【") and stripped.endswith("】"):
+            label = ""
+            continue
+        if stripped.startswith("版本") and _ARROW_RE.search(stripped):
+            label = ""
+            continue
+        work = stripped.split("※", 1)[0].strip()
+        if not work:
+            continue
+        ib = _IB_RE.match(work)
+        if ib is not None:
+            label_match = _LABEL_RE.search(ib.group("rest"))
+            label = label_match.group("label") if label_match else ""
+            continue
+        child = _CHILD_RE.match(work)
+        if child is None:
+            continue
+        if child.group("role").lower() not in ("texcoord", "texcoord_vb"):
+            continue
+        if "脸" not in label:
+            continue
+        transition = _CHILD_TRANS_RE.match(child.group("value").strip())
+        if transition is None:
+            continue
+        from_token = transition.group("old")
+        if not HASH_RE.fullmatch(from_token):
+            continue
+        from_hash = from_token.lower()
+        if from_hash not in transitions:
+            transitions[from_hash] = transition.group("new").lower()
+    return transitions
 
 
 def build_chain_index(entries: list[ChangeEntry]) -> dict[str, list[ChangeEntry]]:
