@@ -143,6 +143,34 @@ def delete_store_folder(store_dir: Path, mods_dir: Path, rel: Path) -> bool:
     return True
 
 
+def prune_empty_store_folders(store_dir: Path, mods_dir: Path) -> int:
+    """Remove every empty directory under the mods folder's store root; returns the count.
+
+    Consumed backups leave their mirror directories behind; a bottom-up sweep
+    deleting only truly empty directories (deepest first, store root itself
+    never removed) cleans those leftovers without touching live backups,
+    sibling mods, or other mods folders.
+    """
+    root = store_root(store_dir, Path(mods_dir))
+    if not root.is_dir():
+        return 0
+    removed = 0
+    folders = sorted(
+        (p for p in root.rglob("*") if p.is_dir()),
+        key=lambda p: len(p.parts),
+        reverse=True,
+    )
+    for folder in folders:
+        try:
+            if any(folder.iterdir()):
+                continue
+            folder.rmdir()
+        except OSError:
+            continue
+        removed += 1
+    return removed
+
+
 _DISABLED_TOGGLE = "DISABLED_"
 
 

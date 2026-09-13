@@ -104,12 +104,14 @@ from PySide6.QtWidgets import (
 )
 
 from ..backups import BackupChain, collect_backup_chains_for, default_backups_dir, is_backup_name, is_backup_path, store_folder_for_mod, store_folder_to_open
+from ..blend_remap import blend_marker_kind
 from ..fixer import STRUCTURAL_KINDS, FixerData, empty_fixer_data, read_ini_text
 from ..mods import (
     AnalysisSummary,
+    BROKEN_BUFFERS_SIGNAL,
     CURRENT_SIGNAL,
-    UPDATES_SIGNAL,
-    STRUCTURAL_SIGNAL,
+    OLD_HASH_SIGNAL,
+    SECTIONS_SIGNAL,
     ModNode,
     ModVersion,
     aggregate_updates,
@@ -124,6 +126,7 @@ from ..promoted import canonical_key, load_promoted, remove_promoted_paths, reta
 from ..repo import DEFAULT_VARIANT, REPO_VARIANTS, default_cache_dir, project_root
 from ..state import load_state, save_state
 from ..structure import StructureData
+from ..texcoord_upgrade import marker_kind
 from .worker import (
     _UPDATE_BUTTON,
     TaskWorker,
@@ -181,15 +184,18 @@ def _forget_worker(worker: TaskWorker) -> None:
 
 
 def updates_text(version: ModVersion, as_mod: bool) -> str:
-    """Updates-column text for a node with a version: a tri-state update signal.
+    """Updates-column text for a node with a version: its strongest update signal.
 
-    Hash-outdated shows "outdated", structural-only "structural";
+    buffers = missing or old-format shipped .buf/.ib; old hash = chain-fixable
+    stale hashes; sections = pending structural ini insertions;
     a file with no known hashes shows nothing while a mod with none shows "unknown".
     """
+    if version.broken_count > 0:
+        return BROKEN_BUFFERS_SIGNAL
     if version.outdated_count > 0:
-        return UPDATES_SIGNAL
+        return OLD_HASH_SIGNAL
     if version.structural_count > 0:
-        return STRUCTURAL_SIGNAL
+        return SECTIONS_SIGNAL
     if version.current_count > 0:
         return CURRENT_SIGNAL
     return "unknown" if as_mod else ""
@@ -205,6 +211,8 @@ def hashes_text(version: ModVersion, as_mod: bool) -> str:
     )
     if version.structural_count > 0:
         counts += f" · {version.structural_count} structural"
+    if version.broken_count > 0:
+        counts += f" · {version.broken_count} broken buffer(s)"
     return f"mod · {counts}" if as_mod else counts
 
 
@@ -235,16 +243,22 @@ def updates_tooltip(signal: str) -> str:
             "All hashes this mod references match the current hash table - "
             "nothing to fix."
         )
-    elif signal == UPDATES_SIGNAL:
+    elif signal == OLD_HASH_SIGNAL:
         text = (
             "Some referenced hashes are from an older game version. 'Fix' renames "
             "them (and re-maps toggle offsets) to the current version."
         )
-    elif signal == STRUCTURAL_SIGNAL:
+    elif signal == SECTIONS_SIGNAL:
         text = (
             "Hashes are current, but the mod needs structural fixes: sections must "
             "be inserted, duplicated or added to match the current rendering, not "
             "just renamed. 'Fix' can apply them."
+        )
+    elif signal == BROKEN_BUFFERS_SIGNAL:
+        text = (
+            "Some shipped .buf/.ib files are missing or declare an old vertex "
+            "format. 'Fix' can restore or convert them when the dump data "
+            "covers the component."
         )
     elif signal == "unknown":
         text = (
@@ -271,11 +285,18 @@ def hashes_tooltip(version: ModVersion) -> str:
             f"{version.structural_count} structural - sections need "
             "insert/duplicate/add edits, not just renames; 'Fix' can apply them."
         )
+    if version.broken_count > 0:
+        lines.append(
+            f"{version.broken_count} broken buffer(s) - missing or old-format "
+            "shipped binaries; 'Fix' can restore or convert them."
+        )
     return wrap_tooltip("\n".join(lines))
 
 
 def updates_color(version: ModVersion, as_mod: bool) -> QColor | None:
     """Updates-column foreground for the update signal: amber, gray, green, or gray."""
+    if version.broken_count > 0:
+        return COLOR_UPDATED
     if version.outdated_count > 0:
         return COLOR_UPDATED
     if version.structural_count > 0:
@@ -300,6 +321,8 @@ def _analysis_log_line(summary: AnalysisSummary) -> str:
         line += f" · detected: {detected}"
     if summary.structural:
         line += f" · {summary.structural} with structural fixes"
+    if summary.broken:
+        line += f" · {summary.broken} with broken buffer(s)"
     return line
 
 
@@ -326,15 +349,15 @@ def update_button_state(
 ) -> tuple[bool, str]:
     """(enabled, label) for the data-update button from the upstream checks.
 
-    Pending shows a disabled "Checking..."; any True enables "Update hashes", all
-    False grays it as "Hashes updated", and anything else grays it as "Update unavailable".
+    Pending shows a disabled "Checking..."; any True enables "Update data", all
+    False grays it as "Data updated", and anything else grays it as "Update unavailable".
     """
     if pending:
         return False, "Checking..."
     if any(status is True for status in statuses.values()):
         return True, _UPDATE_BUTTON
     if statuses and all(status is False for status in statuses.values()):
-        return False, "Hashes updated"
+        return False, "Data updated"
     return False, "Update unavailable"
 
 
@@ -350,8 +373,8 @@ def _scope_has_backups(mods_dir: Path, store_dir: Path, scope_path: Path) -> boo
     """Whether the fix-backup store holds any backup for the given scope.
 
     A single-file scope checks chains for exactly that file; a directory
-    scope checks that the scope's store mirror folder exists and is not
-    empty (recursively).
+    scope checks that the scope's store mirror folder exists and holds at
+    least one file recursively (empty folders don't count).
     """
     if scope_path.is_file():
         return bool(collect_backup_chains_for([scope_path], mods_dir, store_dir))
@@ -359,7 +382,7 @@ def _scope_has_backups(mods_dir: Path, store_dir: Path, scope_path: Path) -> boo
         mirror = store_folder_for_mod(store_dir, mods_dir, scope_path)
     except ValueError:
         return False
-    return mirror.is_dir() and next(mirror.rglob("*"), None) is not None
+    return mirror.is_dir() and any(path.is_file() for path in mirror.rglob("*"))
 
 
 def _stamp_text(stamp: int) -> str:
@@ -474,15 +497,20 @@ class StateSettings:
 class _RevertDialog(QDialog):
     """Pick, per file with fix history, the backup state to restore it to.
 
-    Each row's combo offers "Leave as is" plus one entry per backup, newest fix
-    first down to the original pre-fix content.
+    Each row shows the file's fix kind, and its combo offers "Leave as is"
+    plus one entry per backup, newest fix first down to the original pre-fix
+    content.
     """
 
     def __init__(
-        self, chains: Iterable[BackupChain], parent: QWidget | None = None
+        self,
+        chains: Iterable[BackupChain],
+        parent: QWidget | None = None,
+        kinds: Mapping[Path, str] | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Revert fix history")
+        kinds = kinds if kinds is not None else {}
         ordered = sorted(chains, key=lambda chain: str(chain.live))
         self._lives = [chain.live for chain in ordered]
 
@@ -495,8 +523,8 @@ class _RevertDialog(QDialog):
             )
         )
 
-        self._table = QTableWidget(len(ordered), 2, self)
-        self._table.setHorizontalHeaderLabels(["File", "Restore to"])
+        self._table = QTableWidget(len(ordered), 3, self)
+        self._table.setHorizontalHeaderLabels(["File", "Fix kind", "Restore to"])
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self._table.setWordWrap(False)
@@ -505,6 +533,7 @@ class _RevertDialog(QDialog):
             file_item = QTableWidgetItem(chain.live.name)
             file_item.setToolTip(str(chain.live))
             self._table.setItem(row, 0, file_item)
+            self._table.setItem(row, 1, QTableWidgetItem(kinds.get(chain.live, "")))
             combo = QComboBox(self)
             combo.addItem("Leave as is", None)
             newest_first = list(reversed(chain.backups))
@@ -512,7 +541,7 @@ class _RevertDialog(QDialog):
                 level = position + 1
                 state = "original" if position == len(newest_first) - 1 else f"undo {level} fix(es)"
                 combo.addItem(f"{state} — before {_stamp_text(stamp)}", backup)
-            self._table.setCellWidget(row, 1, combo)
+            self._table.setCellWidget(row, 2, combo)
         layout.addWidget(self._table, 1)
 
         buttons = QHBoxLayout()
@@ -531,7 +560,7 @@ class _RevertDialog(QDialog):
     def _set_all_undo_one(self) -> None:
         """Point every combo at its first non-leave option (index 1)."""
         for row in range(self._table.rowCount()):
-            combo = self._table.cellWidget(row, 1)
+            combo = self._table.cellWidget(row, 2)
             if not isinstance(combo, QComboBox):
                 continue
             if combo.count() > 1:
@@ -541,7 +570,7 @@ class _RevertDialog(QDialog):
         """(live, backup) pairs for every row whose combo selects a backup."""
         choices: list[tuple[Path, Path]] = []
         for row in range(self._table.rowCount()):
-            combo = self._table.cellWidget(row, 1)
+            combo = self._table.cellWidget(row, 2)
             if not isinstance(combo, QComboBox):
                 continue
             backup = combo.currentData()
@@ -2301,7 +2330,7 @@ class MainWindow(QMainWindow):
         self._mods_edit.setReadOnly(True)
         self._mods_edit.setPlaceholderText("Select your 3DMigoto mods folder…")
         self._browse_btn = QPushButton("Browse…", central)
-        self._update_btn = QPushButton("Update hashes", central)
+        self._update_btn = QPushButton(_UPDATE_BUTTON, central)
         mods_row.addWidget(self._mods_edit, 1)
         mods_row.addWidget(self._browse_btn)
         mods_row.addWidget(self._update_btn)
@@ -2644,7 +2673,7 @@ class MainWindow(QMainWindow):
         if self._worker is not None:
             return
         self._loaded_via_update = True
-        self.append_log("Updating ZZZ-Model-Hash data (2048p + 1024p)...")
+        self.append_log("Updating upstream data (2048p + 1024p + buffers)...")
         self._start_worker(update_data_worker(), self._on_data_loaded)
 
     def _check_hash_updates(self) -> None:
@@ -2656,9 +2685,9 @@ class MainWindow(QMainWindow):
         if self._check_worker is not None:
             return
         if self._update_statuses is None:
-            self.append_log("Checking upstream hash data for updates...")
+            self.append_log("Checking upstream data for updates...")
         else:
-            self.append_log("Retrying upstream hash data check...")
+            self.append_log("Retrying upstream data check...")
         worker = check_updates_worker()
         self._check_worker = worker
         _ACTIVE_WORKERS.add(worker)
@@ -2785,7 +2814,7 @@ class MainWindow(QMainWindow):
             and node.variant not in self._data
         ):
             self.append_log(
-                f"{node.variant} hash data is not loaded — click 'Update hashes' first."
+                f"{node.variant} data is not loaded — click '{_UPDATE_BUTTON}' first."
             )
             return
         suffix = " (currently DISABLED)" if node.disabled else ""
@@ -2845,7 +2874,21 @@ class MainWindow(QMainWindow):
         if not chain_list:
             self.append_log(f"Nothing to revert in '{self._fixing_name}'")
             return
-        dialog = _RevertDialog(chain_list, self)
+        mods_dir = self._mods_edit.text().strip()
+        kinds: dict[Path, str] = {}
+        for chain in chain_list:
+            live = chain.live
+            if live.suffix == ".ini":
+                kinds[live] = "hash/section fixes"
+            elif live.suffix == ".buf":
+                kinds[live] = (
+                    marker_kind(default_backups_dir(), Path(mods_dir), live)
+                    or blend_marker_kind(default_backups_dir(), Path(mods_dir), live)
+                    or "buffer fix"
+                )
+            else:
+                kinds[live] = "binary fix"
+        dialog = _RevertDialog(chain_list, self, kinds=kinds)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         choices = dialog.selected_choices()
@@ -2853,7 +2896,10 @@ class MainWindow(QMainWindow):
             self.append_log("No states selected for restore")
             return
         self.append_log(f"Restoring {len(choices)} file(s)…")
-        self._start_worker(revert_worker(choices), self._on_revert_done)
+        self._start_worker(
+            revert_worker(choices, mods_dir, default_backups_dir()),
+            self._on_revert_done,
+        )
 
     def _on_revert_done(self, count: object) -> None:
         if not isinstance(count, int):
@@ -3068,9 +3114,11 @@ class MainWindow(QMainWindow):
         signal = aggregate_updates(node)
         item.setText(2, signal)
         item.setToolTip(2, updates_tooltip(signal))
-        if signal == UPDATES_SIGNAL:
+        if signal == BROKEN_BUFFERS_SIGNAL:
             item.setForeground(2, COLOR_UPDATED)
-        elif signal == STRUCTURAL_SIGNAL:
+        elif signal == OLD_HASH_SIGNAL:
+            item.setForeground(2, COLOR_UPDATED)
+        elif signal == SECTIONS_SIGNAL:
             item.setForeground(2, COLOR_STRUCTURAL)
         elif signal:
             item.setForeground(2, COLOR_CURRENT)

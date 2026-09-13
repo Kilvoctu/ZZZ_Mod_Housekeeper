@@ -18,6 +18,9 @@ CHANGELOG_NAME = "Hash变动日志.txt"
 CHARACTERS_DIR_NAME = "角色hash表"
 LOWVARM_REPO_URL = "https://github.com/hefengchang/ZZZ-Model-Hash_LowVarm.git"
 LOWVARM_CHARACTERS_DIR_NAME = "角色hash表低显"
+FIX_TOOL_REPO_URL = "https://github.com/hefengchang/ZZZ-Model-Fix-Tool.git"
+
+_DUMP_SUBFOLDER = "版本修复工具/dump"
 
 _TIMEOUT_SECONDS = 300
 _MARKER_NAME = ".zzzhashfix.json"
@@ -30,20 +33,41 @@ class RepoError(RuntimeError):
 
 @dataclass(frozen=True)
 class RepoVariant:
-    """One upstream hash-data repo variant (2048p high graphics / 1024p low)."""
+    """One upstream data-repo variant.
+
+    ``hash`` kinds ship the hash datasets (changelog + character tables);
+    the ``dump`` kind ships the fix-tool vertex dumps, of which only one
+    subfolder is extracted into the cache.
+    """
 
     key: str
     repo_url: str
     dir_name: str
     repo_name: str
     branch: str
+    kind: str = "hash"
 
 
 REPO_VARIANTS: dict[str, RepoVariant] = {
     "2048p": RepoVariant("2048p", REPO_URL, "zzz-model-hash", "ZZZ-Model-Hash", "master"),
-    "1024p": RepoVariant("1024p", LOWVARM_REPO_URL, "zzz-model-hash_lowvarm", "ZZZ-Model-Hash_LowVarm", "main"),
+    "1024p": RepoVariant(
+        "1024p", LOWVARM_REPO_URL, "zzz-model-hash_lowvarm", "ZZZ-Model-Hash_LowVarm", "main"
+    ),
+    "fix_tool": RepoVariant(
+        "fix_tool",
+        FIX_TOOL_REPO_URL,
+        "zzz-model-fix-tool",
+        "ZZZ-Model-Fix-Tool",
+        "main",
+        kind="dump",
+    ),
 }
 DEFAULT_VARIANT = "2048p"
+
+
+def hash_variants() -> tuple[str, ...]:
+    """Variant keys whose repos ship the hash datasets (excludes the dump repo)."""
+    return tuple(key for key, info in REPO_VARIANTS.items() if info.kind == "hash")
 
 
 def project_root() -> Path:
@@ -101,6 +125,7 @@ def ensure_repo(
     first download raises RepoError.
     """
     target = Path(cache_dir) if cache_dir is not None else default_cache_dir(variant)
+    info = REPO_VARIANTS[variant]
     if target.is_dir() and (target / _MARKER_NAME).is_file():
         try:
             remote = _head_etag(_archive_url(variant))
@@ -108,16 +133,16 @@ def ensure_repo(
                 return target
             _download_archive(variant, target)
         except RepoError as exc:
-            log(f"Could not update ZZZ-Model-Hash data, keeping existing copy: {exc}")
+            log(f"Could not update {info.repo_name} data, keeping existing copy: {exc}")
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
-    log(f"Downloading ZZZ-Model-Hash data into {target} ...")
+    log(f"Downloading {info.repo_name} data into {target} ...")
     try:
         _download_archive(variant, target)
     except RepoError:
         _remove_tree(target)
         raise
-    log(f"Downloaded ZZZ-Model-Hash data into {target}")
+    log(f"Downloaded {info.repo_name} data into {target}")
     return target
 
 
@@ -166,7 +191,11 @@ def _download_archive(variant: str, target: Path) -> None:
     )
     try:
         body, etag = _fetch_url(_archive_url(variant))
-        _extract_archive(body, staging)
+        _extract_archive(
+            body,
+            staging,
+            subfolder=_DUMP_SUBFOLDER if REPO_VARIANTS[variant].kind == "dump" else None,
+        )
         _replace_dir(target, staging)
         _write_marker(target, etag=etag, sha=_head_sha(variant))
     finally:
@@ -210,14 +239,23 @@ def _head_sha(variant: str) -> str:
         return ""
 
 
-def _extract_archive(archive: bytes, destination: Path) -> None:
-    """Unpack a GitHub zip archive, dropping its single top-level folder."""
+def _extract_archive(
+    archive: bytes, destination: Path, subfolder: str | None = None
+) -> None:
+    """Unpack a GitHub zip archive, dropping its single top-level folder.
+
+    With ``subfolder``, only members under ``<top>/<subfolder>/`` are unpacked
+    and their paths are rebased so the subfolder's contents land in the
+    destination root.
+    """
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         members = zf.namelist()
         if not members:
             raise RepoError("downloaded archive is empty")
         top = members[0].split("/", 1)[0]
         prefix = top + "/"
+        if subfolder is not None:
+            prefix += subfolder.strip("/") + "/"
         destination.mkdir(parents=True, exist_ok=True)
         for member in members:
             if not member.startswith(prefix):

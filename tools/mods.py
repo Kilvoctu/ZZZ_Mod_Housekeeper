@@ -12,7 +12,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .backups import is_backup_name, is_backup_path
+from .bufferbinds import BufferBind, collect_buffer_binds
 from .changelog import ARROW_SPLIT_RE
+from .dumpdata import DumpLayout
 from .fixer import (
     FixerData,
     detect_variant,
@@ -29,9 +31,10 @@ from .structure import StructureData
 _DISABLED_PREFIX = "DISABLED_"
 _CONTAINER_DIRS = frozenset({"resources"})
 _PART_DIRS = frozenset({"body", "face", "hair", "legs", "torso", "head"})
-UPDATES_SIGNAL = "outdated"
+BROKEN_BUFFERS_SIGNAL = "buffers"
 CURRENT_SIGNAL = "up to date"
-STRUCTURAL_SIGNAL = "structural"
+OLD_HASH_SIGNAL = "old hash"
+SECTIONS_SIGNAL = "sections"
 
 
 @dataclass
@@ -46,11 +49,7 @@ class ModVersion:
     unknown_count: int = 0
     total: int = 0
     structural_count: int = 0
-
-
-def is_outdated(version: ModVersion) -> bool:
-    """True when the version has outdated or pending-structural hashes."""
-    return version.outdated_count > 0 or version.structural_count > 0
+    broken_count: int = 0
 
 
 def set_mod_enabled(path: Path, enabled: bool) -> Path:
@@ -146,6 +145,7 @@ class AnalysisSummary:
     backups_skipped: int = 0
     files_scanned: int = 0
     structural: int = 0
+    broken: int = 0
     variants: dict[str, int] = field(default_factory=dict, compare=False)
 
 
@@ -539,6 +539,60 @@ def version_for_hashes(
     return version
 
 
+_SLOT_ROLES = {"vb0": "position", "vb1": "texcoord", "vb2": "blend"}
+
+
+def _dump_layout_for_hash(bind: BufferBind, data: FixerData) -> DumpLayout | None:
+    """The dump layout covering this bind's hash, or None when uncovered.
+
+    Direct lookup: the bind hash matches a dump component's index buffer, so
+    that component's layout for the slot's role applies.  Fallback: the bind
+    hash matches the slot role's current hash.  Both take the first sorted
+    match.
+    """
+    role = _SLOT_ROLES.get(bind.slot)
+    if role is None:
+        return None
+    dumps = data.dumps
+    for key2 in sorted({(key[0], key[1]) for key in dumps.layouts}):
+        if dumps.ibs.get(key2) != bind.hash:
+            continue
+        layout = dumps.layouts.get((*key2, role))
+        if layout is not None:
+            return layout
+    for key3 in sorted(dumps.current_hashes):
+        if key3[2] == role and dumps.current_hashes[key3] == bind.hash:
+            layout = dumps.layouts.get(key3)
+            if layout is not None:
+                return layout
+    return None
+
+
+def _bind_is_broken(bind: BufferBind, data: FixerData) -> bool:
+    """Whether one buffer bind is diagnosed broken against the fixer data.
+
+    A declared-but-absent binary is broken (.buf and .ib alike); a present
+    vertex buffer with a declared stride is broken when the covering dump
+    layout's stride disagrees, and dump-uncovered texcoord binds fall back to
+    the legacy face gate (the 36-byte pre-2.54 face format).  Undeclared
+    strides are never diagnosed.  Index buffers only ever break by missing.
+    """
+    if not bind.exists:
+        return bind.filename != ""
+    if bind.slot not in _SLOT_ROLES:
+        return False
+    if bind.stride is None:
+        return False
+    layout = _dump_layout_for_hash(bind, data)
+    if layout is None:
+        return (
+            bind.slot == "vb1"
+            and bind.hash in data.face_texcoord_hashes
+            and bind.stride == 36
+        )
+    return bind.stride != layout.stride
+
+
 def _analyze_node(
     node: ModNode,
     datasets: Mapping[str, FixerData],
@@ -548,6 +602,7 @@ def _analyze_node(
     structure: StructureData | None = None,
     trigger_hashes: frozenset[str] = frozenset(),
     file_structural: dict[Path, int] | None = None,
+    file_binds: dict[Path, list[BufferBind]] | None = None,
 ) -> tuple[set[str], dict[Path, dict[str, set[str]]]]:
     """Analyze node in place; return (subtree hash union, per-file hints).
 
@@ -557,6 +612,7 @@ def _analyze_node(
     hashes: set[str] = set()
     file_hints: dict[Path, dict[str, set[str]]] = {}
     file_structural = file_structural if file_structural is not None else {}
+    file_binds = file_binds if file_binds is not None else {}
     for child in node.children:
         if child.kind == "file":
             try:
@@ -568,6 +624,8 @@ def _analyze_node(
                 text = None
             file_hints[child.path] = collected
             hashes.update(collected)
+            if text is not None and collected:
+                file_binds[child.path] = collect_buffer_binds(text, child.path)
             if (
                 structure is not None
                 and text is not None
@@ -583,6 +641,7 @@ def _analyze_node(
                 child, datasets, ladders, known, structure=structure,
                 trigger_hashes=trigger_hashes,
                 file_structural=file_structural,
+                file_binds=file_binds,
             )
             hashes |= child_hashes
             file_hints.update(child_hints)
@@ -600,9 +659,11 @@ def _analyze_node(
         node.version = version_for_hashes(
             hashes, data, ladder, latest_index, scope_hints
         )
-        structural_total = _version_subtree_files(
-            node, detected, data, ladder, latest_index, file_hints, file_structural
+        structural_total, broken_total = _version_subtree_files(
+            node, detected, data, ladder, latest_index, file_hints, file_structural,
+            file_binds,
         )
+        node.version.broken_count = broken_total
         if structure is not None:
             node.version.structural_count = structural_total
     return hashes, file_hints
@@ -616,38 +677,55 @@ def _version_subtree_files(
     latest_index: int,
     file_hints: dict[Path, dict[str, set[str]]],
     file_structural: dict[Path, int] | None = None,
-) -> int:
+    file_binds: dict[Path, list[BufferBind]] | None = None,
+) -> tuple[int, int]:
     """Version every file node inside a mod's subtree against its dataset.
 
     Directory nodes inside the subtree inherit the mod's detected variant,
     and file versions reuse the collected hint maps (each .ini read only once).
+    Returns (structural_total, broken_total) accumulated over the subtree.
     """
-    total = 0
+    file_binds = file_binds if file_binds is not None else {}
+    structural_total = 0
+    broken_total = 0
     for child in node.children:
         if child.kind == "file":
             child.variant = detected
             collected = file_hints[child.path]
-            child.version = version_for_hashes(
+            version = version_for_hashes(
                 collected, data, ladder, latest_index, collected
             )
+            child.version = version
+            version.broken_count = sum(
+                1
+                for bind in file_binds.get(child.path, ())
+                if _bind_is_broken(bind, data)
+            )
+            broken_total += version.broken_count
             if file_structural:
                 count = file_structural.get(child.path, 0)
-                child.version.structural_count = count
-                total += count
+                version.structural_count = count
+                structural_total += count
         else:
             child.variant = detected
-            total += _version_subtree_files(
-                child, detected, data, ladder, latest_index, file_hints, file_structural
+            child_structural, child_broken = _version_subtree_files(
+                child, detected, data, ladder, latest_index, file_hints,
+                file_structural, file_binds,
             )
-    return total
+            structural_total += child_structural
+            broken_total += child_broken
+    return structural_total, broken_total
 
 
 def aggregate_updates(node: ModNode) -> str:
     """Subtree update signal for a version-less directory row (category/subfolder).
 
-    "outdated" outranks "structural", which outranks "up to date";
+    "buffers" (broken shipped buffers: missing or old-format) outranks
+    "old hash" (chain-fixable stale hashes), which outranks "sections"
+    (pending structural ini insertions), which outranks "up to date";
     "" when no nested versioned node is classifiable.
     """
+    broken = False
     outdated = False
     structural = False
     known = False
@@ -656,18 +734,22 @@ def aggregate_updates(node: ModNode) -> str:
         current = stack.pop()
         version = current.version
         if version is not None:
+            if version.broken_count > 0:
+                broken = True
+                break
             if version.outdated_count > 0:
                 outdated = True
-                break
             if version.structural_count > 0:
                 structural = True
             if version.current_count > 0:
                 known = True
         stack.extend(current.children)
+    if broken:
+        return BROKEN_BUFFERS_SIGNAL
     if outdated:
-        return UPDATES_SIGNAL
+        return OLD_HASH_SIGNAL
     if structural:
-        return STRUCTURAL_SIGNAL
+        return SECTIONS_SIGNAL
     return CURRENT_SIGNAL if known else ""
 
 
@@ -693,5 +775,7 @@ def _summarize(tree: ModNode, backups_skipped: int) -> AnalysisSummary:
                 summary.unknown += 1
             if version.structural_count > 0:
                 summary.structural += 1
+            if version.broken_count > 0:
+                summary.broken += 1
         stack.extend(node.children)
     return summary

@@ -11,8 +11,19 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .backups import backup_path_for, included_ini_files, move_file
-from .changelog import build_chain_index, parse_changelog_file
-from .characters import CharacterDB, HashRef, load_characters
+from .changelog import (
+    build_chain_index,
+    parse_changelog_file,
+    parse_face_texcoord_transitions_file,
+)
+from .characters import (
+    CharacterDB,
+    HashRef,
+    face_texcoord_hashes,
+    is_face_component,
+    load_characters,
+)
+from .dumpdata import DumpData
 from .legacy import legacy_chains_path, merge_entries, parse_legacy_chains
 from .model import ChangeEntry, Component, FixSuggestion, normalize_name
 from .patches import load_user_patches
@@ -57,6 +68,8 @@ class FixerData:
     db: CharacterDB
     entries: list[ChangeEntry] = field(default_factory=list)
     user_patches: dict[str, ChangeEntry] = field(default_factory=dict)
+    face_texcoord_hashes: frozenset[str] = field(default_factory=frozenset)
+    dumps: DumpData = field(default_factory=DumpData)
 
 
 def empty_fixer_data() -> FixerData:
@@ -64,13 +77,51 @@ def empty_fixer_data() -> FixerData:
     return FixerData(chains={}, ib_index_changes={}, db=CharacterDB())
 
 
-def load_fixer_data(repo_dir: Path | None, *, include_pcdata: bool = False) -> FixerData:
+def _collect_face_texcoord_hashes(
+    changelog_file: Path | None, entries: list[ChangeEntry], db: CharacterDB
+) -> frozenset[str]:
+    """Every known face-texcoord hash for upgrade gating.
+
+    Sources: the changelog's face-block texcoord transitions (from and to) and
+    the character table's face-component texcoord fields; older chain steps
+    whose to-hash reached that set are pulled in so stale mods match too.
+    """
+    hashes: set[str] = set()
+    if changelog_file is not None and changelog_file.is_file():
+        transitions = parse_face_texcoord_transitions_file(changelog_file)
+        hashes.update(transitions)
+        hashes.update(transitions.values())
+    hashes.update(face_texcoord_hashes(db))
+    steps: list[tuple[str, str]] = []
+    for entry in entries:
+        if entry.role in ("texcoord", "texcoord_vb"):
+            from_hash = entry.from_hash
+            to_hash = entry.to_hash
+            if from_hash is not None and to_hash is not None:
+                steps.append((from_hash, to_hash))
+    changed = True
+    while changed:
+        changed = False
+        for from_hash, to_hash in steps:
+            if to_hash in hashes and from_hash not in hashes:
+                hashes.add(from_hash)
+                changed = True
+    return frozenset(hashes)
+
+
+def load_fixer_data(
+    repo_dir: Path | None,
+    *,
+    include_pcdata: bool = False,
+    dumps: DumpData | None = None,
+) -> FixerData:
     """Parse the data repo changelog and character JSONs into FixerData.
 
     Legacy pre-2.0 history merges ahead of the changelog; ``include_pcdata`` ingests
     the importer dataset as hint-gated gap-fill (buffer-coupled hashes excluded).
     A ``None`` ``repo_dir`` skips the changelog and character DB entirely (no repo
     cloned) while legacy chains, pcdata gap-fill and user patches still apply.
+    ``dumps`` attaches pre-parsed fix-tool dump data instead of an empty DumpData.
     """
     if repo_dir is None:
         real: list[ChangeEntry] = []
@@ -150,6 +201,10 @@ def load_fixer_data(repo_dir: Path | None, *, include_pcdata: bool = False) -> F
         db=db,
         entries=entries,
         user_patches=patches,
+        face_texcoord_hashes=_collect_face_texcoord_hashes(
+            changelog_path(repo_dir) if repo_dir is not None else None, entries, db
+        ),
+        dumps=DumpData() if dumps is None else dumps,
     )
 
 
@@ -422,6 +477,67 @@ def _is_mesh_ib_rename(
     return any(ref.role == "ib" for ref in data.db.reverse.get(new, []))
 
 
+def _is_face_texcoord_rename(old: str, new: str, data: FixerData) -> bool:
+    """True when a hash rename concerns a face texcoord buffer."""
+    return old in data.face_texcoord_hashes or new in data.face_texcoord_hashes
+
+
+def _hash_untracked(h: str, data: FixerData) -> bool:
+    """True when no dataset entry explains h (no chain, no table use, no target)."""
+    if h in data.chains or h in data.db.reverse or h in data.user_patches:
+        return False
+    return not any(entry.to_hash == h for entry in data.entries)
+
+
+def _face_override_characters(text: str, data: FixerData) -> list[str]:
+    """Characters owning a face IB hash among this ini's TextureOverride hashes."""
+    found: list[str] = []
+    for hash_value, _hint in _iter_texture_override_hash_lines(text):
+        for ref in data.db.reverse.get(hash_value, ()):
+            if ref.role == "ib" and is_face_component(ref.component):
+                if ref.character not in found:
+                    found.append(ref.character)
+    return found
+
+
+def _current_face_texcoord(data: FixerData, characters: Sequence[str]) -> str | None:
+    """The character table's current face texcoord hash for the first matching character."""
+    for name in characters:
+        character = data.db.characters.get(name)
+        if character is None:
+            continue
+        for component in character.components:
+            if not is_face_component(component.name):
+                continue
+            for key in ("texcoord", "texcoord_vb"):
+                value = component.fields.get(key)
+                if value:
+                    return value
+    return None
+
+
+def _face_texcoord_repoint_target(
+    h: str, hint: str, text: str, data: FixerData
+) -> str | None:
+    """Current face texcoord hash an untracked texcoord override should use, or None.
+
+    Fires only when the section hint names a texcoord (and not an eyebrow) and
+    the file also overrides a known face IB; hash-named sections have no
+    character token in the hint, so the face IB is the character evidence.
+    """
+    if not hint or "texcoord" not in hint:
+        return None
+    if "eyebrow" in hint or "眉" in hint:
+        return None
+    characters = _face_override_characters(text, data)
+    if not characters:
+        return None
+    target = _current_face_texcoord(data, characters)
+    if target is None or target == h:
+        return None
+    return target
+
+
 def _scan_text(text: str, data: FixerData, file: str = "") -> list[FixSuggestion]:
     suggestions: list[FixSuggestion] = []
     warned: set[tuple[str, str]] = set()
@@ -477,6 +593,47 @@ def _scan_text(text: str, data: FixerData, file: str = "") -> list[FixSuggestion
                                 f"IB {h} -> {steps[-1].to_hash or h}: the mod ships custom "
                                 ".ib/.buf buffers; a structurally changed mesh needs re-dumped "
                                 "binaries - ini fixes alone will not render correctly"
+                            ),
+                        )
+                    )
+                if (
+                    (h, new_hash) not in warned
+                    and _ships_custom_binaries(text)
+                    and _is_face_texcoord_rename(h, new_hash, data)
+                ):
+                    warned.add((h, new_hash))
+                    suggestions.append(
+                        FixSuggestion(
+                            file=file,
+                            section=section,
+                            line_no=line_no,
+                            kind=INDEX_WARNING_KIND,
+                            old=h,
+                            new=h,
+                            labels="",
+                            reason=(
+                                f"face texcoord {h} -> {new_hash}: the game unpacked the "
+                                "face texcoord format; the mod's 36-byte .buf will be "
+                                "converted automatically (packed 4xUNORM8 -> 4xfloat32, "
+                                "stride 36 -> 48)"
+                            ),
+                        )
+                    )
+            elif h not in data.face_texcoord_hashes and _hash_untracked(h, data):
+                repoint = _face_texcoord_repoint_target(h, hint, text, data)
+                if repoint is not None:
+                    suggestions.append(
+                        FixSuggestion(
+                            file=file,
+                            section=section,
+                            line_no=line_no,
+                            kind="hash",
+                            old=h,
+                            new=repoint,
+                            labels="",
+                            reason=(
+                                f"face texcoord re-point: {h} is untracked; the character "
+                                f"table's current face texcoord is {repoint}"
                             ),
                         )
                     )
