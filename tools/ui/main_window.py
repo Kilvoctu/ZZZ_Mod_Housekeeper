@@ -51,6 +51,7 @@ from PySide6.QtGui import (
     QDragMoveEvent,
     QDropEvent,
     QEnterEvent,
+    QFont,
     QFontDatabase,
     QGradient,
     QGuiApplication,
@@ -69,6 +70,7 @@ from PySide6.QtGui import (
     QPen,
     QPixmap,
     QPolygonF,
+    QShowEvent,
     QShortcut)
 # noinspection PyPackageRequirements
 from PySide6.QtWidgets import (
@@ -1436,6 +1438,10 @@ class _RinaIcon(QLabel):
     def __init__(self, pixmap: QPixmap, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._base = pixmap
+        # Normalize to logical pixels first: QIcon-sourced pixmaps carry a
+        # devicePixelRatio, so raw width alone over-scales on zoomed displays.
+        ratio = pixmap.devicePixelRatio() or 1.0
+        self._zoom = pixmap.width() / ratio / 24.0
         self._glow = 0.0
         # Paint channels written by the active move, resting at zero/one.
         self._angle = 0.0
@@ -1453,8 +1459,9 @@ class _RinaIcon(QLabel):
         self._recent_moves: deque[str] = deque(maxlen=2)
         self._move_ms = 0
         self._move_active = False
-        # 24 px art plus a 2 px transparent halo margin on every side.
-        self.setFixedSize(28, 28)
+        # 24-unit internal art space plus a 2 px transparent halo margin per side.
+        side = round(24 * self._zoom) + 4
+        self.setFixedSize(side, side)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setMouseTracking(True)
         self._timer = QTimer(self)
@@ -1539,6 +1546,7 @@ class _RinaIcon(QLabel):
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         glow = self._glow
         painter.translate(self.width() / 2.0, self.height() / 2.0)
+        painter.scale(self._zoom, self._zoom)
         if glow > 0.0:
             painter.setPen(QPen(Qt.PenStyle.NoPen))
             halo = QColor(COLOR_ACCENT)
@@ -1550,7 +1558,11 @@ class _RinaIcon(QLabel):
         painter.translate(self._offset_x, self._offset_y)
         painter.rotate(self._angle)
         painter.scale(self._scale, self._scale * self._squash)
-        painter.drawPixmap(-12, -12, self._base)
+        painter.drawPixmap(
+            QRectF(-12.0, -12.0, 24.0, 24.0),
+            self._base,
+            QRectF(0.0, 0.0, self._base.width(), self._base.height()),
+        )
         if self._bolts:
             self._paint_bolts(painter)
         if self._sparkles:
@@ -1699,18 +1711,22 @@ class _RinaIcon(QLabel):
     )
 
 
+_TITLE_BAR_HEIGHT = 40
+
+
 class _TitleBar(QWidget):
     """Frameless title bar: drag to move, double-click toggles maximize."""
 
-    def __init__(self, window: QMainWindow) -> None:
+    def __init__(self, window: "MainWindow") -> None:
         super().__init__(window)
         self._window = window
         self.setObjectName("zzzTitleBar")
         self.setCursor(Qt.CursorShape.ArrowCursor)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(8, 0, 4, 0)
+        self.setFixedHeight(_TITLE_BAR_HEIGHT)
         layout.setSpacing(6)
-        self._icon = _RinaIcon(window.windowIcon().pixmap(24, 24), self)
+        self._icon = _RinaIcon(window.windowIcon().pixmap(32, 32), self)
         layout.addWidget(self._icon)
         self._menu_button = QToolButton(self)
         self._menu_button.setObjectName("menuButton")
@@ -1720,11 +1736,14 @@ class _TitleBar(QWidget):
         self.app_menu = QMenu(self)
         self._menu_button.clicked.connect(self._show_menu)
         layout.addWidget(self._menu_button)
-        layout.addWidget(QLabel("ZZZ Mod Housekeeper", self))
+        title_label = QLabel("ZZZ Mod Housekeeper", self)
+        title_font = title_label.font()
+        title_font.setPointSize(10)
+        title_label.setFont(title_font)
+        layout.addWidget(title_label)
         layout.addStretch(1)
         self._min_button = QToolButton(self)
         self._min_button.setObjectName("minButton")
-        self._min_button.setText("─")
         self._min_button.setAutoRaise(True)
         self._min_button.setFixedSize(28, 28)
         self._min_button.clicked.connect(window.showMinimized)
@@ -1737,11 +1756,19 @@ class _TitleBar(QWidget):
         layout.addWidget(self._max_button)
         self._close_button = QToolButton(self)
         self._close_button.setObjectName("closeButton")
-        self._close_button.setText("✕")
         self._close_button.setAutoRaise(True)
         self._close_button.setFixedSize(28, 28)
         self._close_button.clicked.connect(window.close)
         layout.addWidget(self._close_button)
+        # Segoe Fluent Icons / Segoe MDL2 Assets: ChromeMinimize, ChromeClose, ChromeRestore, ChromeMaximize.
+        glyph_font = QFont()
+        glyph_font.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
+        glyph_font.setPointSize(9)
+        self._min_button.setFont(glyph_font)
+        self._max_button.setFont(glyph_font)
+        self._close_button.setFont(glyph_font)
+        self._min_button.setText("\uE921")
+        self._close_button.setText("\uE8BB")
         self._sync_max_glyph()
         self._busy = False
         self._busy_phase = 0.0
@@ -1765,6 +1792,7 @@ class _TitleBar(QWidget):
         self._busy_timer = QTimer(self)
         self._busy_timer.setInterval(16)
         self._busy_timer.timeout.connect(self._tick_busy)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         window.installEventFilter(self)
 
     def _show_menu(self) -> None:
@@ -1800,7 +1828,8 @@ class _TitleBar(QWidget):
             self._window.showMaximized()
 
     def _sync_max_glyph(self) -> None:
-        self._max_button.setText("❐" if self._window.isMaximized() else "□")
+        """Set the MDL2/Fluent ChromeRestore (maximized) / ChromeMaximize glyph."""
+        self._max_button.setText("\uE923" if self._window.isMaximized() else "\uE922")
 
     def set_busy(self, busy: bool) -> None:
         """Start or stop the cascading busy wash across the title bar."""
@@ -2165,7 +2194,7 @@ class _ModsTree(QTreeWidget):
 
 
 class _AboutDialog(QDialog):
-    """About box: feature summary, source link, and Rina's greeting."""
+    """About box: feature summary, credits, and Rina's greeting."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2183,11 +2212,10 @@ class _AboutDialog(QDialog):
         body_label = QLabel(
             "Dusts outdated asset hashes out of your mods, installs new arrivals, "
             "keeps preset loadouts in order, previews each mod's screenshots, and "
-            "keeps an eye on upstream hash data.",
+            "keeps an eye on upstream data.",
             self,
         )
         body_label.setWordWrap(True)
-        body_label.setMaximumWidth(440)
         layout.addWidget(body_label)
         credit_label = QLabel(
             'By Kilvoctu: <a href="https://github.com/Kilvoctu/ZZZ_Mod_Housekeeper">Source</a>',
@@ -2195,21 +2223,34 @@ class _AboutDialog(QDialog):
         )
         credit_label.setOpenExternalLinks(True)
         layout.addWidget(credit_label)
-        footer = QHBoxLayout()
-        quote_label = QLabel(
-            '<i>"Are you the new master? Rina from Victoria Housekeeping, at your service."</i>',
+        data_label = QLabel(
+            'Data from <a href="https://github.com/hefengchang/ZZZ-Model-Hash">ZZZ-Model-Hash</a>, '
+            '<a href="https://github.com/hefengchang/ZZZ-Model-Hash_LowVarm">LowVarm</a>, and '
+            '<a href="https://github.com/hefengchang/ZZZ-Model-Fix-Tool">Fix-Tool</a> '
+            'by hefengchang.',
             self,
         )
-        quote_label.setWordWrap(True)
-        quote_label.setMaximumWidth(340)
+        data_label.setOpenExternalLinks(True)
+        data_label.setWordWrap(False)
+        layout.addWidget(data_label)
+        license_label = QLabel("Released under the MIT License.", self)
+        layout.addWidget(license_label)
+        quote_label = QLabel(
+            '<i>"Are you the new master?<br>Rina from Victoria Housekeeping, at your service."</i>',
+            self,
+        )
+        quote_label.setWordWrap(False)
+        footer = QHBoxLayout()
+        footer.addWidget(_RinaIcon(QApplication.windowIcon().pixmap(28, 28), self))
         footer.addWidget(quote_label)
-        footer.addStretch(1)
-        okay_button = QPushButton("Okay", self)
-        okay_button.clicked.connect(self.accept)
-        okay_button.setDefault(True)
-        okay_button.setMinimumWidth(80)
-        footer.addWidget(okay_button)
         layout.addLayout(footer)
+        self.adjustSize()
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """Lock the measured size once, after the real-font layout exists."""
+        if self.minimumHeight() != self.maximumHeight():
+            self.setFixedSize(self.sizeHint())
+        super().showEvent(event)
 
 
 class MainWindow(QMainWindow):
@@ -2320,9 +2361,12 @@ class MainWindow(QMainWindow):
         central = QWidget(self)
         central.setMouseTracking(True)
         layout = QVBoxLayout(central)
+        margins = layout.contentsMargins()
+        layout.setContentsMargins(margins.left(), 0, margins.right(), margins.bottom())
 
         self._title_bar = _TitleBar(self)
         self._build_hamburger_menu()
+        self._title_bar.customContextMenuRequested.connect(self._on_title_bar_context_menu)
         layout.addWidget(self._title_bar)
 
         mods_row = QHBoxLayout()
@@ -3398,8 +3442,16 @@ class MainWindow(QMainWindow):
             else:
                 QTimer.singleShot(0, self._deferred_scope_refresh)
 
+    def _on_title_bar_context_menu(self, pos: QPoint) -> None:
+        """Pop the root menu for a right-click on the title bar."""
+        self._exec_root_context_menu(self._title_bar.mapToGlobal(pos))
+
     def _show_root_context_menu(self, position: QPoint) -> None:
         """Right-click menu on blank space: expand/collapse the tree, open, or create mods folder."""
+        self._exec_root_context_menu(self._tree.viewport().mapToGlobal(position))
+
+    def _exec_root_context_menu(self, global_pos: QPoint) -> None:
+        """Show the blank-space root menu at a global position and dispatch the choice."""
         menu = QMenu(self)
         expand_all = menu.addAction("Expand all")
         expand_all.triggered.connect(self._tree.expandAll)
@@ -3409,7 +3461,7 @@ class MainWindow(QMainWindow):
         open_folder = menu.addAction("Open mods folder")
         create_folder = menu.addAction("Create new folder…")
         self._restore_edge_cursor()
-        chosen = menu.exec(self._tree.viewport().mapToGlobal(position))
+        chosen = menu.exec(global_pos)
         if chosen is open_folder:
             self._open_mods_folder()
         elif chosen is create_folder:
