@@ -1,8 +1,5 @@
 """Fetch/refresh the ZZZ-Model-Hash data into a local cache directory."""
 
-from collections.abc import Callable
-from dataclasses import dataclass
-from pathlib import Path
 import io
 import json
 import os
@@ -10,6 +7,9 @@ import shutil
 import sys
 import tempfile
 import zipfile
+from collections.abc import Callable
+from dataclasses import dataclass
+from pathlib import Path
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 

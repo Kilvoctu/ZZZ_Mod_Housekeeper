@@ -4,8 +4,10 @@ from pathlib import Path
 
 # noinspection PyPackageRequirements
 from PySide6.QtCore import QLockFile, QStandardPaths
+
 # noinspection PyPackageRequirements
 from PySide6.QtGui import QIcon
+
 # noinspection PyPackageRequirements
 from PySide6.QtWidgets import QApplication, QMessageBox, QProxyStyle, QStyle
 

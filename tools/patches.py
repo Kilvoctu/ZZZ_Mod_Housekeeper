@@ -6,7 +6,7 @@ Every *.txt directly inside data/ (not subfolders) may list quick hash renames, 
 import re
 from pathlib import Path
 
-from .model import ChangeEntry, HASH_FULL_RE
+from .model import HASH_FULL_RE, ChangeEntry
 from .repo import project_root
 
 _ARROW_SPLIT_RE = re.compile(r"\s*(?:->|→|\bto\b)\s*")

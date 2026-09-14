@@ -38,7 +38,7 @@ def load_characters(repo_dir: Path) -> CharacterDB:
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON in {path.name}: {exc}") from exc
         if not isinstance(data, list):
-            raise ValueError(f"expected a JSON array in {path.name}")
+            raise TypeError(f"expected a JSON array in {path.name}")
         character = Character(name=path.stem)
         for entry in data:
             if not isinstance(entry, dict) or "component_name" not in entry:

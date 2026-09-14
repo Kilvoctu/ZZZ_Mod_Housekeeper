@@ -6,7 +6,7 @@ The changelog is a hand-maintained UTF-8 text file listing model hash changes, n
 import re
 from pathlib import Path
 
-from .model import ChangeEntry, HASH_RE, normalize_name
+from .model import HASH_RE, ChangeEntry, normalize_name
 
 _ARROW_RE = re.compile(r"->|→")
 ARROW_SPLIT_RE = re.compile(r"\s*(?:->|→)\s*")

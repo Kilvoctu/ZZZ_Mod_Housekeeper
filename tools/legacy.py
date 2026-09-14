@@ -7,7 +7,7 @@ import json
 import re
 from pathlib import Path
 
-from .model import ChangeEntry, HASH_RE
+from .model import HASH_RE, ChangeEntry
 from .repo import data_dir
 
 _LABEL_RE = re.compile(r"^\s*(?P<va>[\d.]+[A-Za-z]*)(?:\s*(?:->|→)\s*(?P<vb>[\d.]+[A-Za-z]*))?")

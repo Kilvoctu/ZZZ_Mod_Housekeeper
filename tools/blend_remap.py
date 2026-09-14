@@ -56,19 +56,19 @@ def _decimal(value: object) -> int | None:
 
 
 def load_blend_remaps(path: Path | None = None) -> BlendTables:
-    """Parse the blend-remaps dataset into BlendTables; ValueError on bad structure."""
+    """Parse the blend-remaps dataset into BlendTables; TypeError on bad structure."""
     source = Path(path) if path is not None else blend_remaps_path()
     data = json.loads(source.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
-        raise ValueError("blend remaps data is not an object")
+        raise TypeError("blend remaps data is not an object")
     raw_mappings = data.get("mappings")
     raw_aliases = data.get("position_to_blend")
     if not isinstance(raw_mappings, dict) or not isinstance(raw_aliases, dict):
-        raise ValueError("blend remaps data lacks mappings or position_to_blend")
+        raise TypeError("blend remaps data lacks mappings or position_to_blend")
     mappings: dict[str, dict[int, int]] = {}
     for hash_value, raw_table in raw_mappings.items():
         if not isinstance(raw_table, dict):
-            raise ValueError(f"blend mapping {hash_value!r} is not an object")
+            raise TypeError(f"blend mapping {hash_value!r} is not an object")
         table: dict[int, int] = {}
         for raw_old, raw_new in raw_table.items():
             old = _decimal(raw_old)
@@ -83,7 +83,7 @@ def load_blend_remaps(path: Path | None = None) -> BlendTables:
     position_to_blend: dict[str, str] = {}
     for key, raw_target in raw_aliases.items():
         if not isinstance(raw_target, str):
-            raise ValueError(f"position_to_blend entry {key!r} is not a string")
+            raise TypeError(f"position_to_blend entry {key!r} is not a string")
         position_to_blend[key] = raw_target
     return BlendTables(mappings=mappings, position_to_blend=position_to_blend)
 

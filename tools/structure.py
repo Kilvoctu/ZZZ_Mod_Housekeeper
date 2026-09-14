@@ -5,7 +5,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from functools import cached_property
 
-from .characters import Component, CharacterDB
+from .characters import CharacterDB, Component
 from .model import iter_texture_triples
 
 VB_ROLES = frozenset(
@@ -354,7 +354,7 @@ def build_structure(
                             for_hash=hash_value,
                             ib=primary,
                             char=char,
-                            comp_name=sorted(weapon_keys)[0][1],
+                            comp_name=min(weapon_keys)[1],
                             comp_latin="weapon",
                             section_title=f"{char}.weapon.IB",
                             kind="weapon",
@@ -481,7 +481,7 @@ def _primary_resolution(
     Most characters use the 2048p shared NormalMap hash; a few low-varm-era
     tables reference the 1024p hash in their own components.
     """
-    for key, facts in merged.items():
+    for facts in merged.values():
         if facts.char != char:
             continue
         for slot in facts.textures:
