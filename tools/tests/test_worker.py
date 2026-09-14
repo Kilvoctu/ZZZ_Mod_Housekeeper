@@ -9,6 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+
 # noinspection PyPackageRequirements
 from PySide6.QtCore import QCoreApplication, QEventLoop, QTimer
 
@@ -53,6 +54,7 @@ def build_7z_archive(path: Path, members: dict[str, str]) -> Path:
             cwd=staging,
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
     finally:
@@ -340,7 +342,7 @@ def test_delete_folder_worker_prunes_emptied_preset(tmp_path, monkeypatch):
 
 
 def test_rename_folder_worker_retargets_promoted_key(tmp_path, monkeypatch):
-    mods, store, presets_dir = delete_setup(monkeypatch, tmp_path, {"p1": ["Cat/Old"]})
+    mods, _store, presets_dir = delete_setup(monkeypatch, tmp_path, {"p1": ["Cat/Old"]})
     mod = mods / "Cat" / "Old"
     mod.mkdir(parents=True)
     (mod / "preview.jpg").write_text("img", encoding="utf-8")
@@ -358,7 +360,7 @@ def test_rename_folder_worker_retargets_promoted_key(tmp_path, monkeypatch):
 
 
 def test_delete_folder_worker_removes_promoted_key(tmp_path, monkeypatch):
-    mods, store, presets_dir = delete_setup(
+    mods, _store, presets_dir = delete_setup(
         monkeypatch, tmp_path, {"p1": ["Cat/OldMod"]}
     )
     mod = mods / "Cat" / "OldMod"

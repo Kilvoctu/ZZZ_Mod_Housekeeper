@@ -152,7 +152,7 @@ def test_load_fixer_data_attaches_patches(tmp_path, monkeypatch):
     missing = tmp_path / "no-such-static-dataset.json"
     monkeypatch.setattr("tools.fixer.legacy_chains_path", lambda: missing)
     monkeypatch.setattr("tools.fixer.player_character_data_path", lambda: missing)
-    monkeypatch.setattr("tools.fixer.load_user_patches", lambda: {})
+    monkeypatch.setattr("tools.fixer.load_user_patches", dict)
     base = load_fixer_data(repo_dir)
     patch = ChangeEntry(from_hash="b9f0d595", to_hash="1132301e", role="user")
     monkeypatch.setattr(

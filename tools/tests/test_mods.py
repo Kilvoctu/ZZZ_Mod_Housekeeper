@@ -1,12 +1,13 @@
 """Tests for tools.mods: mod tree building and per-mod version analysis."""
 
-from collections.abc import Set
+from collections.abc import Set as AbstractSet
 from copy import deepcopy
 from pathlib import Path
 
+import pytest
+
 # noinspection PyPackageRequirements
 from PySide6.QtGui import QColor
-import pytest
 
 from tools import changelog, mods, repo
 from tools.bufferbinds import BufferBind
@@ -350,7 +351,7 @@ def build_container_mods(base: Path) -> Path:
 
 def test_resources_container_absorbed_into_parent_mod(tmp_path):
     root = build_container_mods(tmp_path)
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Group", False),
@@ -375,7 +376,7 @@ def test_container_pack_with_multiple_winners_stays_category(tmp_path):
     (pack / "resources" / "a.ini").write_text("[TextureOverrideA]\n", encoding="utf-8")
     (pack / "other").mkdir()
     (pack / "other" / "b.ini").write_text("[TextureOverrideB]\n", encoding="utf-8")
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Pack", False),
@@ -391,7 +392,7 @@ def test_top_level_resources_dir_is_a_mod(tmp_path):
     root = tmp_path / "mods"
     (root / "resources").mkdir(parents=True)
     (root / "resources" / "r.ini").write_text("[TextureOverrideR]\n", encoding="utf-8")
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert by_name(tree, "resources").kind == "mod"
     assert [child.name for child in tree.children] == ["resources"]
@@ -402,7 +403,7 @@ def test_resources_container_case_insensitive(tmp_path):
     mod = root / "Upper"
     (mod / "Resources").mkdir(parents=True)
     (mod / "Resources" / "r.ini").write_text("[TextureOverrideR]\n", encoding="utf-8")
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert by_name(tree, "Upper").kind == "mod"
     assert by_name(tree, "Resources").kind == "subfolder"
@@ -414,7 +415,7 @@ def test_single_mod_category_not_promoted(tmp_path):
     (root / "Subfolder" / "RealMod" / "s.ini").write_text(
         "[TextureOverrideS]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Subfolder", False),
@@ -469,7 +470,7 @@ def test_multi_part_parts_fold_into_one_mod(tmp_path):
     (root / "Group" / "Pack" / "face" / "face.ini").write_text(
         "[TextureOverrideFace]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Group", False),
@@ -496,7 +497,7 @@ def test_part_pack_with_non_part_sibling_stays_category(tmp_path):
     (root / "Pack" / "real" / "b.ini").write_text(
         "[TextureOverrideB]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Pack", False),
@@ -514,7 +515,7 @@ def test_single_part_folder_not_promoted(tmp_path):
     (root / "Cat" / "body" / "s.ini").write_text(
         "[TextureOverrideS]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Cat", False),
@@ -532,7 +533,7 @@ def test_wrapper_with_loose_file_promoted_to_mod(tmp_path):
     (wrapper / "inner" / "m.ini").write_text(
         "[TextureOverrideX]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Claret Flint", False),
@@ -555,7 +556,7 @@ def test_wrapper_without_loose_file_not_promoted(tmp_path):
     (wrapper / "inner" / "m.ini").write_text(
         "[TextureOverrideX]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Claret Flint", False),
@@ -580,7 +581,7 @@ def test_wrapper_two_mod_children_not_promoted(tmp_path):
     (wrapper / "modB" / "b.ini").write_text(
         "[TextureOverrideB]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Cat", False),
@@ -630,7 +631,7 @@ def test_disabled_wrapper_promoted_keeps_disabled_flag(tmp_path):
     (wrapper / "inner" / "m.ini").write_text(
         "[TextureOverrideX]\n", encoding="utf-8"
     )
-    tree, summary = mods.analyze_mods(root, EMPTY_DATA)
+    tree, _summary = mods.analyze_mods(root, EMPTY_DATA)
 
     assert inventory(tree) == [
         ("category", "Cat", False),
@@ -1567,7 +1568,7 @@ def test_analyze_scope_structural_parity(tmp_path):
     mod = root / "SampleMod"
     mod.mkdir(parents=True)
     (mod / "Mod.ini").write_bytes(
-        ("\r\n".join(["[TextureOverrideSampleBody]", "hash = aa000001"]) + "\r\n").encode("utf-8")
+        ("\r\n".join(["[TextureOverrideSampleBody]", "hash = aa000001"]) + "\r\n").encode("utf-8")  # noqa: FLY002
     )
 
     tree, _summary = mods.analyze_mods(root, datasets, structure=structure)
@@ -1583,7 +1584,7 @@ def test_analyze_scope_structural_parity(tmp_path):
     assert subtree_versions(mod_node) == subtree_versions(fresh_node)
 
     (mod_node.path / "Mod.ini").write_bytes(
-        ("\r\n".join(["[TextureOverrideSomething]", "hash = ffffffff"]) + "\r\n").encode("utf-8")
+        ("\r\n".join(["[TextureOverrideSomething]", "hash = ffffffff"]) + "\r\n").encode("utf-8")  # noqa: FLY002
     )
     analyze_scope(mod_node, datasets, structure=structure)
     tree3, _summary3 = mods.analyze_mods(root, datasets, structure=structure)
@@ -2011,7 +2012,7 @@ def test_aggregate_updates_broken_after_outdated_sibling():
     assert mods.aggregate_updates(category) == "buffers"
 
 
-def bind_data(face_hashes: Set[str] = frozenset()):
+def bind_data(face_hashes: AbstractSet[str] = frozenset()):
     """FixerData whose dumps describe the chara/body component (ib 11111111).
 
     Current hashes mirror the real JuFufu face dump: a blend hash a mod
@@ -2100,7 +2101,7 @@ def test_bind_is_broken_matrix():
     assert not any(mods._bind_is_broken(bind, covered) for bind in jufufu_section)
 
 
-BIND_INI = "\r\n".join(
+BIND_INI = "\r\n".join(  # noqa: FLY002
     [
         "[TextureOverrideBody]",
         "hash = 11111111",
@@ -2170,7 +2171,7 @@ def test_analyze_structural_breakage_counts(tmp_path):
     mod = tmp_path / "SampleMod"
     mod.mkdir()
     (mod / "Mod.ini").write_bytes(
-        ("\r\n".join(["[TextureOverrideSampleBody]", "hash = aa000001"]) + "\r\n").encode("utf-8")
+        ("\r\n".join(["[TextureOverrideSampleBody]", "hash = aa000001"]) + "\r\n").encode("utf-8")  # noqa: FLY002
     )
 
     tree, summary = analyze_mods(tmp_path, datasets, structure=structure)
@@ -2191,10 +2192,10 @@ def test_analyze_structural_breakage_counts(tmp_path):
     other = tmp_path / "UnknownMod"
     other.mkdir()
     (other / "Other.ini").write_bytes(
-        ("\r\n".join(["[TextureOverrideSomething]", "hash = ffffffff"]) + "\r\n").encode("utf-8")
+        ("\r\n".join(["[TextureOverrideSomething]", "hash = ffffffff"]) + "\r\n").encode("utf-8")  # noqa: FLY002
     )
     tree3, summary3 = analyze_mods(tmp_path, datasets, structure=structure)
-    unknown_node = [child for child in tree3.children if child.name == "UnknownMod"][0]
+    unknown_node = next(child for child in tree3.children if child.name == "UnknownMod")
     assert version_of(unknown_node).structural_count == 0
     assert summary3.structural == 1
 

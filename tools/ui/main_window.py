@@ -6,16 +6,15 @@ Right-clicking a mod, subfolder, or .ini file in the mods overview offers
 
 import base64
 import ctypes
-from collections import deque
 import json
 import math
 import random
 import re
 import shutil
 import sys
-
+from collections import deque
 from collections.abc import Callable, Iterable, Mapping
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -27,10 +26,10 @@ from PySide6.QtCore import (
     QByteArray,
     QEvent,
     QIODevice,
-    QModelIndex,
     QMimeData,
-    QPersistentModelIndex,
+    QModelIndex,
     QObject,
+    QPersistentModelIndex,
     QPoint,
     QPointF,
     QRect,
@@ -38,7 +37,9 @@ from PySide6.QtCore import (
     QSize,
     Qt,
     QTimer,
-    QUrl)
+    QUrl,
+)
+
 # noinspection PyPackageRequirements
 from PySide6.QtGui import (
     QAction,
@@ -64,14 +65,16 @@ from PySide6.QtGui import (
     QKeySequence,
     QLinearGradient,
     QMouseEvent,
-    QPaintEvent,
     QPainter,
+    QPaintEvent,
     QPalette,
     QPen,
     QPixmap,
     QPolygonF,
+    QShortcut,
     QShowEvent,
-    QShortcut)
+)
+
 # noinspection PyPackageRequirements
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -93,8 +96,8 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QStyle,
-    QStyleOptionViewItem,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTableWidget,
     QTableWidgetItem,
     QToolButton,
@@ -105,15 +108,24 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..backups import BackupChain, collect_backup_chains_for, default_backups_dir, is_backup_name, is_backup_path, store_folder_for_mod, store_folder_to_open
+from ..backups import (
+    BackupChain,
+    collect_backup_chains_for,
+    default_backups_dir,
+    is_backup_name,
+    is_backup_path,
+    store_folder_for_mod,
+    store_folder_to_open,
+)
 from ..blend_remap import blend_marker_kind
 from ..fixer import STRUCTURAL_KINDS, FixerData, empty_fixer_data, read_ini_text
+from ..modinfo import read_mod_author, scan_mod_info
 from ..mods import (
-    AnalysisSummary,
     BROKEN_BUFFERS_SIGNAL,
     CURRENT_SIGNAL,
     OLD_HASH_SIGNAL,
     SECTIONS_SIGNAL,
+    AnalysisSummary,
     ModNode,
     ModVersion,
     aggregate_updates,
@@ -122,9 +134,27 @@ from ..mods import (
     retarget_subtree_paths,
     set_mod_enabled,
 )
-from ..modinfo import read_mod_author, scan_mod_info
-from ..presets import (_clean_disabled_leaf, delete_preset, enabled_relative_paths, load_presets, missing_preset_paths, mod_relative_paths, preset_changes, preset_names, remove_preset_paths, rename_preset, retarget_preset_paths, save_preset)
-from ..promoted import canonical_key, load_promoted, remove_promoted_paths, retarget_promoted_paths, save_promoted
+from ..presets import (
+    _clean_disabled_leaf,
+    delete_preset,
+    enabled_relative_paths,
+    load_presets,
+    missing_preset_paths,
+    mod_relative_paths,
+    preset_changes,
+    preset_names,
+    remove_preset_paths,
+    rename_preset,
+    retarget_preset_paths,
+    save_preset,
+)
+from ..promoted import (
+    canonical_key,
+    load_promoted,
+    remove_promoted_paths,
+    retarget_promoted_paths,
+    save_promoted,
+)
 from ..repo import DEFAULT_VARIANT, REPO_VARIANTS, default_cache_dir, project_root
 from ..state import load_state, save_state
 from ..structure import StructureData
@@ -389,7 +419,7 @@ def _scope_has_backups(mods_dir: Path, store_dir: Path, scope_path: Path) -> boo
 
 def _stamp_text(stamp: int) -> str:
     """Human-readable local time for a fix backup's UTC-millisecond stamp."""
-    return datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H:%M")
+    return datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def _restored_geometry(raw: object) -> QByteArray | None:
@@ -776,7 +806,7 @@ def _unique_destination(folder: Path, name: str) -> Path:
 def _process_elevated() -> bool:
     """Whether this process is running with administrator privileges."""
     try:
-        is_user_an_admin = getattr(ctypes.windll.shell32, "IsUserAnAdmin")
+        is_user_an_admin = getattr(ctypes.windll.shell32, "IsUserAnAdmin")  # noqa: B009
         return bool(is_user_an_admin())
     except (AttributeError, OSError):
         return False
@@ -2070,18 +2100,21 @@ class _ModsTree(QTreeWidget):
 
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:
         """Serve mod-row tooltips lazily from hover events instead of precomputing per fill."""
-        if obj is self.viewport() and event.type() == QEvent.Type.ToolTip:
-            if isinstance(event, QHelpEvent):
-                item = self.itemAt(event.pos())
-                column = self.columnAt(event.pos().x())
-                if item is not None and column == 0:
-                    node = item.data(0, Qt.ItemDataRole.UserRole)
-                    if isinstance(node, ModNode):
-                        html = self._window.mod_tooltip_html(node)
-                        QToolTip.showText(
-                            event.globalPos(), html, self, self.visualItemRect(item)
-                        )
-                        return True
+        if (
+            obj is self.viewport()
+            and event.type() == QEvent.Type.ToolTip
+            and isinstance(event, QHelpEvent)
+        ):
+            item = self.itemAt(event.pos())
+            column = self.columnAt(event.pos().x())
+            if item is not None and column == 0:
+                node = item.data(0, Qt.ItemDataRole.UserRole)
+                if isinstance(node, ModNode):
+                    html = self._window.mod_tooltip_html(node)
+                    QToolTip.showText(
+                        event.globalPos(), html, self, self.visualItemRect(item)
+                    )
+                    return True
         return super().eventFilter(obj, event)
 
     def dragEnterEvent(self, event: QDragEnterEvent) -> None:
@@ -2302,9 +2335,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         if sys.platform == "win32":
             try:
-                set_corner_preference = getattr(
-                    ctypes.windll.dwmapi, "DwmSetWindowAttribute"
-                )
+                set_corner_preference = getattr(ctypes.windll.dwmapi, "DwmSetWindowAttribute")  # noqa: B009
                 preference = ctypes.c_int(_DWMWCP_ROUND)
                 set_corner_preference(
                     int(self.winId()),
@@ -3158,9 +3189,7 @@ class MainWindow(QMainWindow):
         signal = aggregate_updates(node)
         item.setText(2, signal)
         item.setToolTip(2, updates_tooltip(signal))
-        if signal == BROKEN_BUFFERS_SIGNAL:
-            item.setForeground(2, COLOR_UPDATED)
-        elif signal == OLD_HASH_SIGNAL:
+        if signal == BROKEN_BUFFERS_SIGNAL or signal == OLD_HASH_SIGNAL:
             item.setForeground(2, COLOR_UPDATED)
         elif signal == SECTIONS_SIGNAL:
             item.setForeground(2, COLOR_STRUCTURAL)
@@ -3223,7 +3252,7 @@ class MainWindow(QMainWindow):
             if not writer.write(encoded):
                 return ""
             uri = "data:image/jpeg;base64," + base64.b64encode(buffer.data().data()).decode("ascii")
-        except (Exception,):
+        except (RuntimeError, ValueError, OSError, MemoryError):
             return ""
         self._thumb_cache[key] = uri
         return uri
@@ -3368,9 +3397,10 @@ class MainWindow(QMainWindow):
             if scope is node:
                 self._start_analyze()
                 return
+        # noinspection PyBroadException
         try:
             analyze_scope(scope, self._data, self._structure)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.append_log(f"ERROR: {exc}")
             self._start_analyze()
             return

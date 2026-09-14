@@ -7,7 +7,7 @@ thin factory helpers prebind the engine calls the main window needs.
 import shutil
 from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Union
+from typing import Any
 
 # noinspection PyPackageRequirements
 from PySide6.QtCore import QObject, QThread, Signal
@@ -34,14 +34,6 @@ from ..blend_vote import (
     scan_blend_vote_targets,
 )
 from ..dumpdata import DumpData, load_dump_data
-from ..texcoord_upgrade import (
-    apply_upgrade,
-    buffer_gate,
-    prune_texcoord_markers,
-    remove_texcoord_state_keys,
-    rewrite_texcoord_state_keys,
-    scan_texcoord_targets,
-)
 from ..fixer import (
     FilePlan,
     FixerData,
@@ -54,8 +46,8 @@ from ..fixer import (
     scan_files,
     scan_folder,
 )
-from ..mods import ModNode, analyze_mods, rename_mod_folder, set_mod_enabled
 from ..importer import extract_archive
+from ..mods import ModNode, analyze_mods, rename_mod_folder, set_mod_enabled
 from ..presets import remove_preset_paths, retarget_preset_paths
 from ..promoted import remove_promoted_paths, retarget_promoted_paths
 from ..repo import (
@@ -70,6 +62,14 @@ from ..repo import (
     repo_update_available,
 )
 from ..structure import StructureData, build_structure
+from ..texcoord_upgrade import (
+    apply_upgrade,
+    buffer_gate,
+    prune_texcoord_markers,
+    remove_texcoord_state_keys,
+    rewrite_texcoord_state_keys,
+    scan_texcoord_targets,
+)
 
 LogFn = Callable[[str], None]
 
@@ -129,15 +129,16 @@ class TaskWorker(QThread):
         kwargs: dict[str, Any] = {}
         if self._log_kwarg is not None:
             kwargs[self._log_kwarg] = self.log.emit
+        # noinspection PyBroadException
         try:
             result = self._fn(*self._args, **kwargs)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             self.error.emit(friendly_error(exc))
             return
         self.done.emit(result)
 
 
-Scope = Union[Path, str, Sequence[Path]]
+Scope = Path | str | Sequence[Path]
 """Fix/revert scope: a single directory path, or explicit single-file paths."""
 
 
@@ -435,11 +436,14 @@ def revert_worker(
     """Restore live files from chosen backups; ``done`` carries the count restored.
 
     Pre-validates that every chosen backup still exists before restoring
-    anything, so a stale dialog cannot half-apply.  With ``mods_dir`` and
-    ``store_dir`` both given, texcoord-upgrade markers whose live buffer was
-    restored byte-identical to its pre-upgrade content are pruned afterward,
-    as are blend-remap markers restored to their pre-remap bytes, and empty
-    store folders left by the consumed backups are pruned as well.
+    anything, so a stale dialog cannot half-apply.
+
+    With ``mods_dir`` and ``store_dir`` both given, the restore is followed by:
+
+    - pruning texcoord-upgrade markers whose live buffer was restored
+      byte-identical to its pre-upgrade content;
+    - pruning blend-remap markers restored to their pre-remap bytes;
+    - pruning store folders left empty by the consumed backups.
     """
 
     def job(log: LogFn) -> int:

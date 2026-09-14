@@ -2,7 +2,7 @@
 
 from tools.bufferbinds import collect_buffer_binds
 
-MAIN_INI = "\r\n".join(
+MAIN_INI = "\r\n".join(  # noqa: FLY002
     [
         "[TextureOverrideBody]",
         "hash = AAAA0001",
@@ -65,7 +65,7 @@ def test_collect_buffer_binds_collects_every_slot(tmp_path):
     assert (index.stride, index.filename, index.exists) == (None, "ib.buf", True)
 
 
-NO_FILENAME_INI = "\r\n".join(
+NO_FILENAME_INI = "\r\n".join(  # noqa: FLY002
     [
         "[TextureOverrideBody]",
         "hash = aaaa0001",
@@ -88,7 +88,7 @@ def test_collect_buffer_binds_without_filename(tmp_path):
     assert (binds[0].filename, binds[0].path, binds[0].exists) == ("", None, False)
 
 
-ABSENT_INI = "\r\n".join(
+ABSENT_INI = "\r\n".join(  # noqa: FLY002
     [
         "[TextureOverrideBody]",
         "hash = aaaa0001",
@@ -113,7 +113,7 @@ def test_collect_buffer_binds_reports_absent_file(tmp_path):
     assert binds[0].exists is False
 
 
-SUFFIX_INI = "\r\n".join(
+SUFFIX_INI = "\r\n".join(  # noqa: FLY002
     [
         "[TextureOverrideBody]",
         "hash = aaaa0001",
@@ -145,7 +145,7 @@ def test_collect_buffer_binds_variant_suffix_matches_base_block(tmp_path):
     )
 
 
-IGNORED_INI = "\r\n".join(
+IGNORED_INI = "\r\n".join(  # noqa: FLY002
     [
         "[ShaderOverrideS]",
         "hash = aaaa0001",
@@ -182,7 +182,7 @@ def test_collect_buffer_binds_ignores_non_buffer_and_other_sections(tmp_path):
     assert collect_buffer_binds(IGNORED_INI, ini_path) == []
 
 
-DUP_INI = "\r\n".join(
+DUP_INI = "\r\n".join(  # noqa: FLY002
     [
         "[TextureOverrideOne]",
         "hash = aaaa0001",

@@ -17,8 +17,7 @@ def clean_member(name: str) -> str | None:
     if not name or name.startswith("/") or re.match(r"^[A-Za-z]:", name):
         return None
     cleaned = name.replace("\\", "/")
-    if cleaned.startswith("/"):
-        cleaned = cleaned[1:]
+    cleaned = cleaned.removeprefix("/")
     parts = [part for part in cleaned.split("/") if part and part != "."]
     if any(part == ".." for part in parts) or not parts:
         return None
@@ -94,6 +93,7 @@ def _extract_external(
             [*tool, "x", str(archive), "-y", f"-o{staging}"],
             capture_output=True,
             text=True,
+            check=False,
         )
         if result.returncode > 1:
             detail = (result.stderr or result.stdout).strip().splitlines()

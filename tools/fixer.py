@@ -405,9 +405,12 @@ def _entry_index_arrays(
     kind "counts" prefers the object_index_counts arrays when both are present, else
     falls back to object_indexes; kind "indexes" always uses object_indexes.
     """
-    if kind == "counts":
-        if entry.from_index_counts is not None and entry.to_index_counts is not None:
-            return entry.from_index_counts, entry.to_index_counts
+    if (
+        kind == "counts"
+        and entry.from_index_counts is not None
+        and entry.to_index_counts is not None
+    ):
+        return entry.from_index_counts, entry.to_index_counts
     if entry.from_indexes is not None and entry.to_indexes is not None:
         return entry.from_indexes, entry.to_indexes
     return None
@@ -494,9 +497,12 @@ def _face_override_characters(text: str, data: FixerData) -> list[str]:
     found: list[str] = []
     for hash_value, _hint in _iter_texture_override_hash_lines(text):
         for ref in data.db.reverse.get(hash_value, ()):
-            if ref.role == "ib" and is_face_component(ref.component):
-                if ref.character not in found:
-                    found.append(ref.character)
+            if (
+                ref.role == "ib"
+                and is_face_component(ref.component)
+                and ref.character not in found
+            ):
+                found.append(ref.character)
     return found
 
 

@@ -31,6 +31,7 @@ def archive_with(exe: str, path: Path, members: dict[str, str]) -> Path:
             cwd=staging,
             capture_output=True,
             text=True,
+            check=False,
         )
         assert result.returncode == 0, result.stdout + result.stderr
     finally:

@@ -2,7 +2,7 @@
 
 import re
 import shutil
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha1
 from pathlib import Path
 
@@ -28,9 +28,9 @@ from tools.backups import (
 )
 from tools.characters import CharacterDB, HashRef
 from tools.fixer import (
+    INDEX_WARNING_KIND,
     FilePlan,
     FixerData,
-    INDEX_WARNING_KIND,
     apply_plan,
     collect_texture_override_hashes,
     collect_texture_override_hints,
@@ -335,9 +335,11 @@ def test_sample_apply_exact_bytes(tmp_path, sample_data):
     assert list(tmp_path.glob("SampleMod.ini -- *.bak")) == []
     assert dst.read_bytes() == SAMPLE_FIXED.encode("utf-8")
     expected = [
-        "warning: IB a23aa8a3 -> 38daef11: the mod ships custom .ib/.buf buffers; "
-        "a structurally changed mesh needs re-dumped binaries - ini fixes alone "
-        "will not render correctly",
+        (
+            "warning: IB a23aa8a3 -> 38daef11: the mod ships custom .ib/.buf buffers; "
+            "a structurally changed mesh needs re-dumped binaries - ini fixes alone "
+            "will not render correctly"
+        ),
         *(
             f"{old} to {new} [{labels}]"
             for kind, _line_no, old, new, labels in EXPECTED_SAMPLE
@@ -396,8 +398,8 @@ def test_sample_scan_clears_after_apply(tmp_path, sample_data):
 def test_sample_legacy_classification(tmp_path, sample_data):
     dst = write_sample_ini(tmp_path)
     hints_map = collect_texture_override_hints(dst)
-    collar_hint = sorted(hints_map["aaaa0001"])[0]
-    charm_hint = sorted(hints_map["dddd0004"])[0]
+    collar_hint = min(hints_map["aaaa0001"])
+    charm_hint = min(hints_map["dddd0004"])
     known = known_hashes(sample_data)
     status: dict[str, str] = {}
     for h in sorted(set(sample_ini_hashes()) | known):
@@ -630,7 +632,7 @@ def test_collect_backup_chains_subtree(tmp_path):
 
 
 def test_revert_backups_one_level(tmp_path):
-    mods, store, key_dir = store_layout(tmp_path)
+    mods, _store, key_dir = store_layout(tmp_path)
     key_dir.mkdir(parents=True)
     live = mods / "b.ini"
     live.write_text(S3, encoding="utf-8")
@@ -647,7 +649,7 @@ def test_revert_backups_one_level(tmp_path):
 
 
 def test_revert_backups_deep_original(tmp_path):
-    mods, store, key_dir = store_layout(tmp_path)
+    mods, _store, key_dir = store_layout(tmp_path)
     key_dir.mkdir(parents=True)
     live = mods / "b.ini"
     live.write_text(S3, encoding="utf-8")
@@ -664,7 +666,7 @@ def test_revert_backups_deep_original(tmp_path):
 
 
 def test_revert_backups_orphan_restore(tmp_path):
-    mods, store, key_dir = store_layout(tmp_path)
+    mods, _store, key_dir = store_layout(tmp_path)
     backup = key_dir / "DISABLED_versionfix_3000-gone.ini"
     backup.parent.mkdir(parents=True)
     backup.write_text(S1, encoding="utf-8")
@@ -677,7 +679,7 @@ def test_revert_backups_orphan_restore(tmp_path):
 
 
 def test_revert_backups_multiple_choices(tmp_path):
-    mods, store, key_dir = store_layout(tmp_path)
+    mods, _store, key_dir = store_layout(tmp_path)
     key_dir.mkdir(parents=True)
     live_a = mods / "a.ini"
     live_a.write_text(S3, encoding="utf-8")
@@ -1013,7 +1015,7 @@ def test_backup_path_for_layout(tmp_path):
     store = tmp_path / "store"
     live = mods / "pack" / "SampleMod.ini"
     dst = backup_path_for(store, mods, live, 1234)
-    local = datetime.fromtimestamp(1234 / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    local = datetime.fromtimestamp(1234 / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     assert dst == store_root(store, mods) / "pack" / f"SampleMod.ini -- {local}.bak"
 
 
@@ -1032,7 +1034,7 @@ def test_backup_path_for_new_scheme(tmp_path):
     live = mods / "CharaA.ini"
     stamp = 1788950506000
     dst = backup_path_for(store, mods, live, stamp)
-    local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    local = datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     assert dst == store_root(store, mods) / f"CharaA.ini -- {local}.bak"
     assert parse_store_backup_name(dst.name) == (stamp, "CharaA.ini")
 
@@ -1049,7 +1051,7 @@ def test_backup_path_for_collision_suffix(tmp_path):
 
     second = backup_path_for(store, mods, live, stamp)
 
-    local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    local = datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     assert second.name == f"CharaA.ini -- {local} (2).bak"
     assert second != first
 
@@ -1062,7 +1064,7 @@ def test_collect_backup_chains_parses_both_schemes(tmp_path):
     legacy = key_dir / "DISABLED_versionfix_123-part.ini"
     legacy.write_text(S1, encoding="utf-8")
     stamp = 1788950506000
-    local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    local = datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     modern = key_dir / f"part.ini -- {local}.bak"
     modern.write_text(S2, encoding="utf-8")
 
@@ -1114,7 +1116,7 @@ def test_backup_path_for_strips_disabled_dirs(tmp_path):
     live = mods / "DISABLED_modA" / "CharaA.ini"
     stamp = 1788950506000
     dst = backup_path_for(store, mods, live, stamp)
-    local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    local = datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     assert dst == store_root(store, mods) / "modA" / f"CharaA.ini -- {local}.bak"
     assert parse_store_backup_name(dst.name) == (stamp, "CharaA.ini")
 
@@ -1357,7 +1359,7 @@ def test_resolve_live_path_missing_falls_back_to_canonical(tmp_path):
 
 
 def test_collect_backup_chains_subtree_matches_toggled_name(tmp_path):
-    mods, store, key_dir = store_layout(tmp_path)
+    mods, store, _key_dir = store_layout(tmp_path)
     stamp = 1788950506000
     backup = backup_path_for(store, mods, mods / "DISABLED_modA" / "CharaA.ini", stamp)
     backup.parent.mkdir(parents=True)
@@ -1382,7 +1384,7 @@ def test_collect_backup_chains_subtree_matches_toggled_name(tmp_path):
 
 
 def test_collect_backup_chains_for_matches_across_toggle(tmp_path):
-    mods, store, key_dir = store_layout(tmp_path)
+    mods, store, _key_dir = store_layout(tmp_path)
     stamp = 1788950506000
     backup = backup_path_for(store, mods, mods / "DISABLED_modA" / "CharaA.ini", stamp)
     backup.parent.mkdir(parents=True)
@@ -1427,8 +1429,8 @@ def test_two_state_chain_merges_and_orders(tmp_path, monkeypatch):
         ]
     )
     key_dir = store_root(store, mods)
-    local_a = datetime.fromtimestamp(stamp_a / 1000).strftime("%Y-%m-%d %H.%M.%S")
-    local_b = datetime.fromtimestamp(stamp_b / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    local_a = datetime.fromtimestamp(stamp_a / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
+    local_b = datetime.fromtimestamp(stamp_b / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     first_backup = key_dir / "modA" / f"CharaA.ini -- {local_a}.bak"
     second_backup = key_dir / "modA" / f"CharaA.ini -- {local_b}.bak"
 
@@ -2365,12 +2367,16 @@ def test_redump_warning_for_ib_renames_with_custom_buffers(tmp_path):
         ("hash", 19, "0139f7e8", "0a00d846"),
     ]
     assert [s.reason for s in plan.suggestions if s.kind == INDEX_WARNING_KIND] == [
-        "IB 43ed3c22 -> 619c5c94: the mod ships custom .ib/.buf buffers; "
-        "a structurally changed mesh needs re-dumped binaries - ini fixes alone "
-        "will not render correctly",
-        "IB ea055cac -> a7683988: the mod ships custom .ib/.buf buffers; "
-        "a structurally changed mesh needs re-dumped binaries - ini fixes alone "
-        "will not render correctly",
+        (
+            "IB 43ed3c22 -> 619c5c94: the mod ships custom .ib/.buf buffers; "
+            "a structurally changed mesh needs re-dumped binaries - ini fixes alone "
+            "will not render correctly"
+        ),
+        (
+            "IB ea055cac -> a7683988: the mod ships custom .ib/.buf buffers; "
+            "a structurally changed mesh needs re-dumped binaries - ini fixes alone "
+            "will not render correctly"
+        ),
     ]
 
 

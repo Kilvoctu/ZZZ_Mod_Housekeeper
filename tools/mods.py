@@ -101,7 +101,7 @@ def validate_folder_name(name: str) -> str:
         raise ValueError("Folder name is empty")
     if any(char in cleaned for char in '\\/:*?"<>|'):
         raise ValueError(f"Folder name contains invalid characters: {cleaned}")
-    if cleaned.endswith(".") or cleaned.endswith(" "):
+    if cleaned.endswith((".", " ")):
         raise ValueError(f"Folder name must not end with a dot or space: {cleaned}")
     return cleaned
 
@@ -339,9 +339,7 @@ def _mod_roots(
         if winner.name.lower() in _CONTAINER_DIRS and not any(
             other is not winner and winner.parent in other.parents
             for other in mod_roots
-        ):
-            promoted[winner] = parent
-        elif (
+        ) or (
             winner.name.lower() in _PART_DIRS
             and len(siblings) >= 2
             and all(other.name.lower() in _PART_DIRS for other in siblings)

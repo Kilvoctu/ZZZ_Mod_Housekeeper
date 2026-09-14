@@ -3,13 +3,18 @@
 Simple GUI that can fix some ZZZ mods and do basic mod management. 
 This app is built mainly for personal use.
 
-## Requirements
 
-- Python 3.10+
-- Internet for initial setup
+## Setup/Usage
+1. Have Python 3.10+.
+2. Download/clone this repo.
+3. Run `build_exe.bat` and wait until it's done.
+4. Run `ZZZModKeeper.exe`.
+5. Optional: click **Update data** to enable the fix features; mod management works without data.  
+*Alternatively, download data from sources below and drop into `data/`.
+6. Browse to your mod folder.
+7. Hopefully the rest is self-explanatory.
 
 ## Features
-
 - Fully portable.
 - Supports flat and nested folder hierarchy.
 - Mod fixer features:
@@ -30,18 +35,7 @@ This app is built mainly for personal use.
   - Context menu for mod info (author, toggles).
   - Add/browse mod images in its gallery, set a preview thumbnail as hover tooltip.
 
-## Setup/Usage
-
-1. Download/clone this repo.
-2. Run `build_exe.bat` and wait until it's done.
-3. Run `ZZZModKeeper.exe`.
-4. Optional: click **Update data** to enable the fix features; mod management works without data.  
-*Alternatively, download data from sources below and drop into `data/`.
-5. Browse to your mod folder.
-6. Hopefully the rest is self-explanatory.
-
 ## Known Issues
-
 - Can't guarantee it'll fix every mod.
 - Don't include any loose file in a category folder; category may falsely be identified as a mod.
 - Drag and drop doesn't work when running app elevated; just run it normal.

@@ -3,9 +3,9 @@
 import json
 from pathlib import Path
 
+from tools.characters import CharacterDB
 from tools.dumpdata import DumpData, DumpLayout, load_dump_data
 from tools.model import Character, Component
-from tools.characters import CharacterDB
 
 
 def _element(

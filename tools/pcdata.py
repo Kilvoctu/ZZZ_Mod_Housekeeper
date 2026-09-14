@@ -7,7 +7,7 @@ ordinal doubles as the version_index; buffer-coupled rows are skipped.
 import json
 from pathlib import Path
 
-from .model import ChangeEntry, HASH_RE, normalize_name
+from .model import HASH_RE, ChangeEntry, normalize_name
 from .repo import data_dir
 
 KINDS = frozenset({"blend", "draw", "ib", "position", "texcoord"})

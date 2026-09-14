@@ -144,7 +144,7 @@ def test_load_blend_remaps_pins_shipped_tables():
 def test_load_blend_remaps_rejects_malformed(tmp_path):
     missing = tmp_path / "missing-mappings.json"
     missing.write_text('{"position_to_blend": {}}', encoding="utf-8")
-    with pytest.raises(ValueError):
+    with pytest.raises(TypeError):
         load_blend_remaps(missing)
     non_decimal = tmp_path / "non-decimal.json"
     non_decimal.write_text(

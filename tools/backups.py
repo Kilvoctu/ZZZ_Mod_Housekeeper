@@ -9,7 +9,7 @@ import re
 import shutil
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from hashlib import sha1
 from pathlib import Path
 
@@ -215,7 +215,7 @@ def backup_path_for(
         raise ValueError(f"{live_path} is not under {mods_dir}") from None
     if not rel.parts:
         raise ValueError(f"{live_path} is not strictly under {mods_dir}")
-    local = datetime.fromtimestamp(stamp / 1000).strftime("%Y-%m-%d %H.%M.%S")
+    local = datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     rel_dirs = rel.parent.parts
     store_folder = store_root(store_dir, mods_dir).joinpath(*_canonical_dirs(rel_dirs))
     destination = store_folder / f"{live_path.name} -- {local}.bak"
@@ -235,7 +235,7 @@ def parse_store_backup_name(filename: str) -> tuple[int, str] | None:
     if match is None:
         return None
     stamp = int(
-        datetime.strptime(match.group("when"), "%Y-%m-%d %H.%M.%S").timestamp() * 1000
+        datetime.strptime(match.group("when"), "%Y-%m-%d %H.%M.%S").astimezone().timestamp() * 1000
     )
     return stamp, match.group("name")
 
@@ -248,7 +248,7 @@ def _decode_backup_name(filename: str) -> tuple[int, str, int] | None:
     match = STORE_BACKUP_NAME_RE.match(filename)
     if match is not None:
         stamp = int(
-            datetime.strptime(match.group("when"), "%Y-%m-%d %H.%M.%S").timestamp() * 1000
+            datetime.strptime(match.group("when"), "%Y-%m-%d %H.%M.%S").astimezone().timestamp() * 1000
         )
         dup = match.group("dup")
         return stamp, match.group("name"), int(dup) if dup is not None else 0
@@ -272,7 +272,7 @@ def _backup_candidates(store_dir: Path, recursive: bool = False) -> list[Path]:
 
 def is_backup_name(name: str) -> bool:
     """True for files starting with either backup convention (case-sensitive)."""
-    return name.startswith(BACKUP_PREFIX) or name.startswith(FOREIGN_BACKUP_PREFIX)
+    return name.startswith((BACKUP_PREFIX, FOREIGN_BACKUP_PREFIX))
 
 
 def is_backup_dir_part(part: str) -> bool:
