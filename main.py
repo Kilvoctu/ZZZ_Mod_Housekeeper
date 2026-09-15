@@ -15,7 +15,7 @@ from tools.repo import project_root
 from tools.ui.main_window import MainWindow
 
 _LOCK_NAME = "zzzmodkeeper.lock"
-_TOOLTIP_DELAY_MS = 1000
+_TOOLTIP_DELAY_MS = 450
 
 
 class _TooltipDelayStyle(QProxyStyle):

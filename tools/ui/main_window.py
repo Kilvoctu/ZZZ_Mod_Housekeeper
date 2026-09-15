@@ -129,7 +129,6 @@ from ..mods import (
     ModNode,
     ModVersion,
     aggregate_updates,
-    analyze_scope,
     create_mod_folder,
     retarget_subtree_paths,
     set_mod_enabled,
@@ -172,6 +171,7 @@ from .worker import (
     load_all_data_worker,
     rename_folder_worker,
     revert_worker,
+    scope_analyze_worker,
     update_data_worker,
 )
 
@@ -2347,6 +2347,7 @@ class MainWindow(QMainWindow):
         self._worker: TaskWorker | None = None
         self._fixing_name = ""
         self._fixing_node: ModNode | None = None
+        self._scope_refresh_node: ModNode | None = None
         self._node_items: dict[int, QTreeWidgetItem] = {}
         self._check_worker: TaskWorker | None = None
         self._update_statuses: dict[str, bool | None] | None = None
@@ -2798,7 +2799,7 @@ class MainWindow(QMainWindow):
         if self._worker is not None:
             return
         self._loaded_via_update = True
-        self.append_log("Updating upstream data (2048p + 1024p + buffers)...")
+        self.append_log("Updating upstream data (2048p + 1024p + fix-tool)...")
         self._start_worker(update_data_worker(), self._on_data_loaded)
 
     def _check_hash_updates(self) -> None:
@@ -2849,7 +2850,7 @@ class MainWindow(QMainWindow):
     def _on_data_loaded(self, result: object) -> None:
         if not isinstance(result, tuple) or len(result) != 4:
             return
-        repo_dirs, datasets, heads, structure = result
+        repo_dirs, datasets, _heads, structure = result
         loaded = cast(dict[str, FixerData], datasets)
         self._repo_dirs = repo_dirs
         self._data = loaded
@@ -2861,9 +2862,6 @@ class MainWindow(QMainWindow):
                 f"Data loaded ({variant}): {len(data.db.characters)} characters, "
                 f"{len(data.chains)} chain sources"
             )
-        self.append_log(
-            "Heads " + ", ".join(f"{v}={heads[v] or '?'}" for v in variants)
-        )
         via_update = self._loaded_via_update
         self._loaded_via_update = False
         if via_update:
@@ -3454,7 +3452,7 @@ class MainWindow(QMainWindow):
             self._fill_mod_tree(self._root_node)
 
     def _refresh_scope(self, node: ModNode | None) -> None:
-        """Re-analyze one mod/category subtree in place and refresh its tree rows."""
+        """Re-analyze one mod/category subtree in a worker and refresh its rows."""
         if self._worker is not None or not self._data or node is None:
             return
         if node.kind == "root":
@@ -3473,14 +3471,19 @@ class MainWindow(QMainWindow):
             if scope is node:
                 self._start_analyze()
                 return
-        # noinspection PyBroadException
-        try:
-            analyze_scope(scope, self._data, self._structure)
-        except Exception as exc:  # noqa: BLE001
-            self.append_log(f"ERROR: {exc}")
-            self._start_analyze()
+        self._scope_refresh_node = scope
+        self._start_worker(
+            scope_analyze_worker(scope, self._data, self._structure),
+            self._on_scope_analyze_done,
+        )
+
+    def _on_scope_analyze_done(self, result: object) -> None:
+        """Refresh the re-analyzed scope's rows and its ancestors."""
+        node = self._scope_refresh_node
+        self._scope_refresh_node = None
+        if not isinstance(result, ModNode) or node is None or result is not node:
             return
-        stack = [scope]
+        stack = [node]
         while stack:
             current = stack.pop()
             item = self._node_items.get(id(current))
@@ -3490,7 +3493,7 @@ class MainWindow(QMainWindow):
                 else:
                     self._apply_aggregate_row(current, item)
             stack.extend(current.children)
-        scope_item = self._node_items.get(id(scope))
+        scope_item = self._node_items.get(id(node))
         if scope_item is None:
             return
         parent_item = scope_item.parent()
@@ -3957,5 +3960,5 @@ class MainWindow(QMainWindow):
         self._check_retry_timer.stop()
         for worker in (self._worker, self._check_worker):
             if worker is not None and worker.isRunning():
-                worker.wait()
+                worker.wait(3000)
         super().closeEvent(event)

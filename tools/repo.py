@@ -130,8 +130,11 @@ def ensure_repo(
         try:
             remote = _head_etag(_archive_url(variant))
             if remote and remote == _read_marker(target).get("etag"):
+                log(f"{variant}: up to date")
                 return target
             _download_archive(variant, target)
+            sha = _read_marker(target).get("sha", "")
+            log(f"{variant}: updated to {sha[:7]}" if sha else f"{variant}: updated")
         except RepoError as exc:
             log(f"Could not update {info.repo_name} data, keeping existing copy: {exc}")
         return target

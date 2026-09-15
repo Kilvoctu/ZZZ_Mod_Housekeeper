@@ -18,6 +18,7 @@ from tools.backups import store_folder_for_mod
 from tools.blend_remap import blend_state_path
 from tools.dumpdata import DumpData, DumpLayout
 from tools.fixer import FixerData, empty_fixer_data
+from tools.mods import analyze_mods
 from tools.repo import DEFAULT_VARIANT, RepoError
 from tools.texcoord_upgrade import texcoord_state_path
 from tools.ui.worker import (
@@ -27,6 +28,7 @@ from tools.ui.worker import (
     load_all_data_worker,
     rename_folder_worker,
     revert_worker,
+    scope_analyze_worker,
     update_data_worker,
 )
 
@@ -562,3 +564,16 @@ def test_fix_mod_worker_applies_blend_vote_remap(tmp_path, monkeypatch):
     )
     assert markers["Mod/blend.buf"]["action"] == "vote"
     assert any("remapped blend indices (vote)" in line for line in logs)
+
+
+def test_scope_analyze_worker_returns_node(tmp_path):
+    mod = tmp_path / "mod"
+    mod.mkdir()
+    (mod / "char.ini").write_text(
+        "[TextureOverrideBody]\nhash = aaaa0000\n", encoding="utf-8"
+    )
+    root, _summary = analyze_mods(tmp_path, empty_fixer_data())
+    child = next(node for node in root.children if node.kind == "mod")
+    holder = run_worker(scope_analyze_worker(child, empty_fixer_data(), None))
+    assert holder["error"] is None
+    assert holder["result"] is child

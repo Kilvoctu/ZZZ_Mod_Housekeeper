@@ -16,6 +16,7 @@ _JSON_NAME = "state.json"
 _STATE_VERSION = 1
 _SECTIONS = ("settings", "presets", "promoted")
 _SECTION_VALUE_TYPES = (dict, list, str, int, float, bool)
+_STATE_TEXT_CACHE: dict[Path, tuple[int, int, str]] = {}
 
 
 def state_path(root: Path | None = None) -> Path:
@@ -29,16 +30,31 @@ def load_state(root: Path | None = None) -> dict[str, object]:
     A present state.json is read tolerantly: unreadable or malformed content
     yields empty sections instead of an exception.  A missing state.json
     returns the normalized empty state (version plus three empty sections)
-    without writing anything.
+    without writing anything.  The raw text is memoized by (mtime, size) so
+    repeated loads skip the disk read; save_state invalidates the memo.
     """
     path = state_path(root)
-    if path.exists():
+    if not path.exists():
+        return _normalize({})
+    try:
+        stat = path.stat()
+    except OSError:
+        return _normalize({})
+    cached = _STATE_TEXT_CACHE.get(path)
+    if cached is not None and (cached[0], cached[1]) == (stat.st_mtime_ns, stat.st_size):
+        text = cached[2]
+    else:
         try:
-            raw = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            raw = {}
-        return _normalize(raw)
-    return _normalize({})
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            _STATE_TEXT_CACHE.pop(path, None)
+            return _normalize({})
+        _STATE_TEXT_CACHE[path] = (stat.st_mtime_ns, stat.st_size, text)
+    try:
+        raw = json.loads(text)
+    except ValueError:
+        return _normalize({})
+    return _normalize(raw)
 
 
 def save_state(state: dict, root: Path | None = None) -> None:
@@ -54,6 +70,7 @@ def save_state(state: dict, root: Path | None = None) -> None:
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
     os.replace(tmp, path)
+    _STATE_TEXT_CACHE.pop(path, None)
 
 
 def _normalize(raw: object) -> dict[str, object]:

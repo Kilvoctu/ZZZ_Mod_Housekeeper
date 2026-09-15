@@ -47,7 +47,13 @@ from ..fixer import (
     scan_folder,
 )
 from ..importer import extract_archive
-from ..mods import ModNode, analyze_mods, rename_mod_folder, set_mod_enabled
+from ..mods import (
+    ModNode,
+    analyze_mods,
+    analyze_scope,
+    rename_mod_folder,
+    set_mod_enabled,
+)
 from ..presets import remove_preset_paths, retarget_preset_paths
 from ..promoted import remove_promoted_paths, retarget_promoted_paths
 from ..repo import (
@@ -190,7 +196,7 @@ def _attach_dump_data(datasets: dict[str, FixerData], log: LogFn) -> None:
     for data in datasets.values():
         data.dumps = dumps
     if dumps.vertexlimit:
-        log(f"Loaded {len(dumps.vertexlimit)} dump component(s)")
+        log(f"Loaded {len(dumps.vertexlimit)} fix-tool dump component(s)")
 
 
 def _fallback_dataset(log: LogFn) -> FixerData:
@@ -295,6 +301,21 @@ def analyze_worker(
             mapping,
             structure if structure is not None else structure_for(mapping),
         )
+
+    return TaskWorker(job, parent=parent)
+
+
+def scope_analyze_worker(
+    node: ModNode,
+    datasets: Mapping[str, FixerData] | FixerData,
+    structure: StructureData | None,
+    parent: QObject | None = None,
+) -> TaskWorker:
+    """Worker that re-analyzes one mod/category subtree; ``done`` carries the node."""
+
+    def job() -> ModNode:
+        analyze_scope(node, datasets, structure)
+        return node
 
     return TaskWorker(job, parent=parent)
 
