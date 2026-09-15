@@ -803,6 +803,53 @@ def _unique_destination(folder: Path, name: str) -> Path:
     return candidate
 
 
+def _next_ordered_destination(folder: Path, stem: str, suffix: str) -> Path:
+    """Next unused '{stem}-NN{suffix}' slot in insertion order, zero-padded to
+    at least two digits and auto-widening past nine; deleted slots are never
+    reused."""
+    pattern = re.compile(rf"^{re.escape(stem)}-(\d+){re.escape(suffix)}$", re.IGNORECASE)
+    maximum = 0
+    try:
+        entries = list(folder.iterdir()) if folder.is_dir() else []
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.is_file():
+            match = pattern.fullmatch(entry.name)
+            if match is not None:
+                maximum = max(maximum, int(match.group(1)))
+    number = maximum + 1
+    width = max(2, len(str(number)))
+    return folder / f"{stem}-{number:0{width}d}{suffix}"
+
+
+def _existing_images(images: Iterable[Path]) -> list[Path]:
+    """Preview candidates that still exist on disk."""
+    return [path for path in images if path.is_file()]
+
+
+def _category_preview_order(
+    mod_dir: Path, candidates: Iterable[Path], rng: random.Random
+) -> list[Path]:
+    """Category preview order: candidates grouped by their top-level sub-mod,
+    starting at a uniformly random sub-mod and flattening in sorted order.
+    A single eligible sub-mod returns its stable, non-random order."""
+    groups: dict[str, list[Path]] = {}
+    for path in candidates:
+        try:
+            key = path.relative_to(mod_dir).parts[0]
+        except ValueError:
+            key = path.name
+        groups.setdefault(key, []).append(path)
+    ordered = [groups[key] for key in sorted(groups)]
+    if not ordered:
+        return []
+    if len(ordered) > 1:
+        start = rng.randrange(len(ordered))
+        ordered = ordered[start:] + ordered[:start]
+    return [path for group in ordered for path in group]
+
+
 def _process_elevated() -> bool:
     """Whether this process is running with administrator privileges."""
     try:
@@ -1175,17 +1222,19 @@ class _PreviewGallery(QDialog):
                 continue
             try:
                 if source.suffix.lower() in (".png", ".bmp"):
-                    destination = _unique_destination(
-                        self._mod_dir, f"{source.stem}.jpg"
+                    destination = _next_ordered_destination(
+                        self._mod_dir, "preview", ".jpg"
                     )
                     image = QImage(str(source))
                     if image.isNull() or not _save_jpeg(image, destination):
-                        destination = _unique_destination(
-                            self._mod_dir, source.name
+                        destination = _next_ordered_destination(
+                            self._mod_dir, "preview", source.suffix.lower()
                         )
                         shutil.copyfile(source, destination)
                 else:
-                    destination = _unique_destination(self._mod_dir, source.name)
+                    destination = _next_ordered_destination(
+                        self._mod_dir, "preview", source.suffix.lower()
+                    )
                     shutil.copyfile(source, destination)
             except OSError:
                 failed.append(source.name)
@@ -1239,7 +1288,7 @@ class _PreviewGallery(QDialog):
             return
         image = QGuiApplication.clipboard().image()
         if not image.isNull():
-            destination = _unique_destination(self._mod_dir, "preview.jpg")
+            destination = _next_ordered_destination(self._mod_dir, "preview", ".jpg")
             if _save_jpeg(image, destination):
                 self._set_status(f"Added {destination.name}.")
                 self._refresh_list(destination)
@@ -2323,6 +2372,7 @@ class MainWindow(QMainWindow):
         self._promoted: dict[str, str] = load_promoted()
         self._thumb_cache: dict[str, str] = {}
         self._images_cache: dict[str, list[Path]] = {}
+        self._category_preview_order_cache: dict[str, list[Path]] = {}
         self._expected_removals: set[str] = set()
         self._missing_dismissed: set[str] = set()
 
@@ -2827,6 +2877,7 @@ class MainWindow(QMainWindow):
         if not isinstance(result, tuple) or len(result) != 2:
             return
         node, summary = result
+        self._clear_all_preview_memos()
         previous_root = self._root_node
         self._root_node = node
         previous_mods_path = self._mods_path
@@ -2874,6 +2925,7 @@ class MainWindow(QMainWindow):
             return
         dialog = _MissingModsDialog(new_mods_path, stale, self)
         dialog.exec()
+        self._promoted = load_promoted()
         self._missing_dismissed.update(dialog.dismissed)
         self._expected_removals.update(dialog.dismissed)
         if dialog.retargeted:
@@ -3263,6 +3315,13 @@ class MainWindow(QMainWindow):
         for key in [key for key in self._thumb_cache if key.startswith(prefix)]:
             del self._thumb_cache[key]
         self._images_cache.pop(mod_dir.as_posix(), None)
+        self._category_preview_order_cache.pop(mod_dir.as_posix(), None)
+
+    def _clear_all_preview_memos(self) -> None:
+        """Drop every cached thumbnail and preview list after a full rescan."""
+        self._thumb_cache.clear()
+        self._images_cache.clear()
+        self._category_preview_order_cache.clear()
 
     def _promoted_image(self, mod_dir: Path) -> Path | None:
         """Existing promoted preview image of mod_dir, else None."""
@@ -3288,19 +3347,36 @@ class MainWindow(QMainWindow):
             except OSError:
                 cached = []
             self._images_cache[key] = cached
-        return cached
+        return _existing_images(cached)
+
+    def _category_preview_order_for(self, mod_dir: Path, images: Iterable[Path]) -> list[Path]:
+        """Per-sub-mod rotated preview order for a category, stable per session."""
+        key = mod_dir.as_posix()
+        ordered = self._category_preview_order_cache.get(key)
+        if ordered is None:
+            ordered = _category_preview_order(mod_dir, images, random.Random())
+            self._category_preview_order_cache[key] = ordered
+        return ordered
 
     def mod_tooltip_html(self, node: ModNode) -> str:
         """Mod-column tooltip for a mod: preview image, or the plain path text."""
         image = self._promoted_image(node.path)
-        if image is None:
-            images = self._cached_mod_images(node.path)
-            if images:
-                image = images[0]
         if image is not None:
             uri = self._thumb_data_uri(node.path, image)
             if uri:
                 return f"<img src='{uri}'>"
+        else:
+            images = self._cached_mod_images(node.path)
+            if images:
+                if node.children:
+                    for candidate in self._category_preview_order_for(node.path, images):
+                        uri = self._thumb_data_uri(node.path, candidate)
+                        if uri:
+                            return f"<img src='{uri}'>"
+                else:
+                    uri = self._thumb_data_uri(node.path, images[0])
+                    if uri:
+                        return f"<img src='{uri}'>"
         tooltip = str(node.path)
         version = node.version
         if version is not None and version.breaks_label:
