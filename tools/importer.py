@@ -11,6 +11,11 @@ from pathlib import Path
 
 LogFn = Callable[[str], None]
 
+# CREATE_NO_WINDOW suppresses console allocation for the 7z/Rar child
+# (no window flash from the GUI); 0 is a no-op where the constant
+# doesn't exist (non-Windows).
+_SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 
 def clean_member(name: str) -> str | None:
     """Normalize one zip member name to a safe relative forward-slash path."""
@@ -35,6 +40,58 @@ def _is_junk(member: str) -> bool:
 def _top_component(member: str) -> str:
     """First ``/``-separated component of a cleaned member name."""
     return member.split("/")[0]
+
+
+def _move_file(source: Path, target: Path) -> None:
+    """Move one file via atomic rename, falling back to a copy on OSError."""
+    try:
+        os.replace(source, target)
+    except OSError:
+        shutil.copyfile(source, target)
+
+
+def _merge_staging(
+    staging: Path,
+    destination: Path,
+    *,
+    stem: str,
+    replace: bool = False,
+    log: LogFn | None = None,
+) -> int:
+    """Merge a staged extraction tree into destination; return files written.
+
+    Applies the extract_zip layout rules: unsafe/junk members dropped, a
+    multi-top tree wrapped under ``stem``, existing files skipped (logged
+    when given) unless ``replace``.  Files are moved with os.replace, so a
+    same-volume staging tree costs no extra read/write pass.
+    """
+    members: list[str] = []
+    for dirpath, _dirnames, filenames in os.walk(staging):
+        for filename in filenames:
+            relative = Path(dirpath).relative_to(staging) / filename
+            cleaned = clean_member(relative.as_posix())
+            if cleaned is None or _is_junk(cleaned):
+                continue
+            members.append(cleaned)
+    if not members:
+        return 0
+    single_top = len({_top_component(member) for member in members}) == 1
+    target_root = destination if single_top else destination / stem
+    written = 0
+    for member in members:
+        target = target_root / Path(*member.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = staging / Path(*member.split("/"))
+        if target.exists():
+            if replace:
+                _move_file(source, target)
+                written += 1
+            elif log:
+                log(f"skip existing: {target}")
+            continue
+        _move_file(source, target)
+        written += 1
+    return written
 
 
 def find_7z() -> str | None:
@@ -78,55 +135,34 @@ def _extract_external(
 ) -> int:
     """Extract a rar/7z archive via 7-Zip or WinRAR into a staging tree.
 
-    The staged tree is merged into destination with the same safety and
-    layout rules as extract_zip (junk dropped, single-top kept, no overwrite
-    unless replace).  Returns the number of files written.
+    Staging is created on the destination's volume so the merge is an
+    atomic rename instead of a cross-drive copy.  Layout rules match
+    extract_zip (junk dropped, single-top kept, no overwrite unless
+    replace).  Returns the number of files written.
     """
     tool = _find_extractor()
     if tool is None:
         raise RuntimeError(
             "Install 7-Zip or WinRAR to install .rar/.7z mod archives"
         )
-    staging = Path(tempfile.mkdtemp(prefix="zzz-extract-"))
+    anchor = Path(destination).resolve().anchor
+    staging = Path(tempfile.mkdtemp(prefix="zzz-extract-", dir=anchor or None))
     try:
         result = subprocess.run(
             [*tool, "x", str(archive), "-y", f"-o{staging}"],
             capture_output=True,
             text=True,
             check=False,
+            creationflags=_SUBPROCESS_FLAGS,
         )
         if result.returncode > 1:
             detail = (result.stderr or result.stdout).strip().splitlines()
             raise RuntimeError(
                 f"extraction failed: {detail[-1] if detail else result.returncode}"
             )
-        members: list[str] = []
-        for dirpath, _dirnames, filenames in os.walk(staging):
-            for filename in filenames:
-                relative = Path(dirpath).relative_to(staging) / filename
-                cleaned = clean_member(relative.as_posix())
-                if cleaned is None or _is_junk(cleaned):
-                    continue
-                members.append(cleaned)
-        if not members:
-            return 0
-        single_top = len({_top_component(member) for member in members}) == 1
-        target_root = destination if single_top else destination / Path(archive.stem)
-        written = 0
-        for member in members:
-            target = target_root / Path(*member.split("/"))
-            target.parent.mkdir(parents=True, exist_ok=True)
-            source = staging / Path(*member.split("/"))
-            if target.exists():
-                if replace:
-                    target.write_bytes(source.read_bytes())
-                    written += 1
-                elif log:
-                    log(f"skip existing: {target}")
-                continue
-            target.write_bytes(source.read_bytes())
-            written += 1
-        return written
+        return _merge_staging(
+            staging, destination, stem=archive.stem, replace=replace, log=log
+        )
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 
@@ -164,12 +200,16 @@ def extract_zip(
                 continue
             if target.exists():
                 if replace:
-                    target.write_bytes(opened.read(info))
+                    with opened.open(info) as src, open(target, "wb") as dst:
+                        while chunk := src.read(1 << 20):
+                            dst.write(chunk)
                     written += 1
                 elif log:
                     log(f"skip existing: {target}")
                 continue
-            target.write_bytes(opened.read(info))
+            with opened.open(info) as src, open(target, "wb") as dst:
+                while chunk := src.read(1 << 20):
+                    dst.write(chunk)
             written += 1
         return written
 

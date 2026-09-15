@@ -7,7 +7,7 @@ only loose files (e.g. a readme) and that single nested mod root.
 """
 
 import os
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -17,10 +17,9 @@ from .changelog import ARROW_SPLIT_RE
 from .dumpdata import DumpLayout
 from .fixer import (
     FixerData,
+    cached_ini_parse,
     detect_variant,
     known_hashes,
-    parse_ini_facts,
-    read_ini_text,
     resolve_hash_chain,
     structural_fix_count_sections,
 )
@@ -164,7 +163,7 @@ def analyze_mods(
     root = Path(root)
     if isinstance(datasets, FixerData):
         datasets = {DEFAULT_VARIANT: datasets}
-    tree, skipped, root_acts_as_mod = _build_tree(root)
+    tree, skipped, root_acts_as_mod, existing_files = _build_tree(root)
     ladders = {
         variant: version_ladder(dataset.entries)
         for variant, dataset in datasets.items()
@@ -181,6 +180,7 @@ def analyze_mods(
         root_acts_as_mod=root_acts_as_mod,
         structure=structure,
         trigger_hashes=trigger_hashes,
+        exists=_exists_lookup(existing_files),
     )
     return tree, _summarize(tree, skipped)
 
@@ -268,12 +268,13 @@ def _scan_dir(
     dirs: set[tuple[str, ...]],
     included: list[tuple[str, ...]],
     mod_json: set[tuple[str, ...]],
+    files: set[tuple[str, ...]],
 ) -> int:
     """Collect one directory subtree's relative parts in a single scandir pass.
 
-    Records directory parts, included .ini parts and mod.json presence into
-    the accumulators; backup-named subdirectories are pruned and their .ini
-    count (skipped backups) is returned.
+    Records directory parts, every regular file's parts, included .ini parts
+    and mod.json presence into the accumulators; backup-named subdirectories
+    are pruned and their .ini count (skipped backups) is returned.
     """
     dirs.add(parts)
     path = root.joinpath(*parts) if parts else root
@@ -287,15 +288,17 @@ def _scan_dir(
                         pruned += _count_ini_files(entry.path)
                     else:
                         pruned += _scan_dir(
-                            root, (*parts, name), dirs, included, mod_json
+                            root, (*parts, name), dirs, included, mod_json, files
                         )
-                elif name.lower().endswith(".ini"):
-                    if is_backup_path((*parts, name)):
-                        pruned += 1
-                    else:
-                        included.append((*parts, name))
-                elif name.lower() == "mod.json" and entry.is_file():
-                    mod_json.add(parts)
+                elif entry.is_file():
+                    files.add((*parts, name))
+                    if name.lower().endswith(".ini"):
+                        if is_backup_path((*parts, name)):
+                            pruned += 1
+                        else:
+                            included.append((*parts, name))
+                    elif name.lower() == "mod.json":
+                        mod_json.add(parts)
     except OSError:
         pass
     return pruned
@@ -361,12 +364,16 @@ def _mod_roots(
     return {wrapper_promoted.get(winner, winner) for winner in winners}
 
 
-def _build_tree(root: Path) -> tuple[ModNode, int, bool]:
-    """Build the mod tree; returns (root node, excluded backups, root acts as a mod)."""
+def _build_tree(root: Path) -> tuple[ModNode, int, bool, set[str]]:
+    """Build the mod tree; returns (root node, excluded backups, root acts as
+    a mod, lowercase paths of every regular file found during the walk)."""
     dirs: set[tuple[str, ...]] = set()
     included_parts: list[tuple[str, ...]] = []
     mod_json_parts: set[tuple[str, ...]] = set()
-    skipped = _scan_dir(root, (), dirs, included_parts, mod_json_parts)
+    file_parts: set[tuple[str, ...]] = set()
+    skipped = _scan_dir(
+        root, (), dirs, included_parts, mod_json_parts, file_parts
+    )
     included = [root.joinpath(*parts) for parts in included_parts]
     dirs_with_ini = {path.parent for path in included}
     mod_roots = _mod_roots(
@@ -435,7 +442,26 @@ def _build_tree(root: Path) -> tuple[ModNode, int, bool]:
             key=lambda child: child.name.removeprefix(_DISABLED_PREFIX),
         )
         node.children = directories + files
-    return nodes[()], skipped, () in mod_parts
+    return (
+        nodes[()],
+        skipped,
+        () in mod_parts,
+        {str(root.joinpath(*parts)).lower() for parts in file_parts},
+    )
+
+
+def _exists_lookup(existing: set[str]) -> Callable[[Path], bool]:
+    """Existence probe trusting the walk's file set before touching the disk.
+
+    A lowercase set hit answers True without a stat; anything else (files
+    created after the walk, paths that lexically escape the root) falls back
+    to a real ``is_file()`` so the answer stays truthful.
+    """
+
+    def lookup(path: Path) -> bool:
+        return str(path).lower() in existing or path.is_file()
+
+    return lookup
 
 
 def version_ladder(
@@ -601,11 +627,15 @@ def _analyze_node(
     trigger_hashes: frozenset[str] = frozenset(),
     file_structural: dict[Path, int] | None = None,
     file_binds: dict[Path, list[BufferBind]] | None = None,
+    exists: Callable[[Path], bool] | None = None,
 ) -> tuple[set[str], dict[Path, dict[str, set[str]]]]:
     """Analyze node in place; return (subtree hash union, per-file hints).
 
     File nodes get their own hashes' version, mod nodes (and a qualifying
     root) the subtree union's version; every .ini is read exactly once.
+    ``exists`` routes bind existence probes through the walk's file set
+    when supplied (analyze_mods); analyze_scope omits it so re-analysis
+    probes the real disk and sees files created since the initial walk.
     """
     hashes: set[str] = set()
     file_hints: dict[Path, dict[str, set[str]]] = {}
@@ -614,16 +644,21 @@ def _analyze_node(
     for child in node.children:
         if child.kind == "file":
             try:
-                text = read_ini_text(child.path)
-                collected, sections = parse_ini_facts(text)
-            except (ValueError, OSError):
+                parsed = cached_ini_parse(child.path)
+            except ValueError:
+                parsed = None
+            if parsed is None:
                 collected = {}
                 sections = []
                 text = None
+            else:
+                text, collected, sections = parsed
             file_hints[child.path] = collected
             hashes.update(collected)
             if text is not None and collected:
-                file_binds[child.path] = collect_buffer_binds(text, child.path)
+                file_binds[child.path] = collect_buffer_binds(
+                    text, child.path, exists=exists
+                )
             if (
                 structure is not None
                 and text is not None
@@ -640,6 +675,7 @@ def _analyze_node(
                 trigger_hashes=trigger_hashes,
                 file_structural=file_structural,
                 file_binds=file_binds,
+                exists=exists,
             )
             hashes |= child_hashes
             file_hints.update(child_hints)

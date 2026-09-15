@@ -18,6 +18,15 @@ def build_archive(path: Path, members: dict[str, str]) -> Path:
     return path
 
 
+def build_staging(staging: Path, members: dict[str, str]) -> Path:
+    """Hand-build a staging tree as the external extractor would leave it."""
+    for name, payload in members.items():
+        target = staging / Path(*name.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(payload, encoding="utf-8")
+    return staging
+
+
 def archive_with(exe: str, path: Path, members: dict[str, str]) -> Path:
     """Create a real rar/7z archive (plain files) via an external tool."""
     staging = Path(tempfile.mkdtemp(prefix="zzz-fixture-"))
@@ -112,6 +121,20 @@ def test_replace_overwrites_pre_created_file(tmp_path):
     count = importer.extract_zip(archive, destination, replace=True)
 
     assert count == 1
+    assert expected.read_text() == "new"
+
+
+def test_extract_zip_skips_then_replaces(tmp_path):
+    destination = tmp_path / "mods"
+    expected = destination / "MyMod" / "a.ini"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("original")
+    archive = build_archive(tmp_path / "MyMod.zip", {"MyMod/a.ini": "new"})
+
+    assert importer.extract_zip(archive, destination) == 0
+    assert expected.read_text() == "original"
+
+    assert importer.extract_zip(archive, destination, replace=True) == 1
     assert expected.read_text() == "new"
 
 
@@ -283,3 +306,109 @@ def test_extract_archive_missing_tool_raises(tmp_path, monkeypatch):
 
     with pytest.raises(RuntimeError, match="7-Zip or WinRAR"):
         importer.extract_archive(archive, destination)
+
+
+def test_extract_archive_7z_suppresses_console_window(tmp_path, monkeypatch):
+    destination = tmp_path / "mods"
+    archive = make_7z(tmp_path / "MyMod.7z", {"MyMod/a.ini": "a"})
+    real_run = subprocess.run
+    captured: list[dict[str, object]] = []
+
+    def spy_run(*args, **kwargs):
+        captured.append(kwargs)
+        return real_run(*args, **kwargs)
+
+    monkeypatch.setattr(importer.subprocess, "run", spy_run)
+
+    count = importer.extract_archive(archive, destination)
+
+    assert count == 1
+    assert captured[0]["creationflags"] == getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    assert (destination / "MyMod" / "a.ini").read_text() == "a"
+
+
+def test_merge_staging_fresh_single_top_moves_into_destination(tmp_path):
+    destination = tmp_path / "mods"
+    staging = build_staging(
+        tmp_path / "staging", {"MyMod/a.ini": "a", "MyMod/sub/b.buf": "b"}
+    )
+
+    count = importer._merge_staging(staging, destination=destination, stem="MyMod")
+
+    assert count == 2
+    assert (destination / "MyMod" / "a.ini").read_text() == "a"
+    assert (destination / "MyMod" / "sub" / "b.buf").read_text() == "b"
+    assert not (staging / "MyMod" / "a.ini").exists()
+
+
+def test_merge_staging_skip_existing_excludes_and_logs(tmp_path):
+    destination = tmp_path / "mods"
+    expected = destination / "MyMod" / "a.ini"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("original")
+    staging = build_staging(
+        tmp_path / "staging", {"MyMod/a.ini": "new", "MyMod/b.buf": "b"}
+    )
+    log: list[str] = []
+
+    count = importer._merge_staging(
+        staging, destination=destination, stem="MyMod", log=log.append
+    )
+
+    assert count == 1
+    assert expected.read_text() == "original"
+    assert len(log) == 1
+    assert "skip existing" in log[0]
+    assert (destination / "MyMod" / "b.buf").read_text() == "b"
+
+
+def test_merge_staging_replace_overwrites(tmp_path):
+    destination = tmp_path / "mods"
+    expected = destination / "MyMod" / "a.ini"
+    expected.parent.mkdir(parents=True)
+    expected.write_text("original")
+    staging = build_staging(tmp_path / "staging", {"MyMod/a.ini": "new"})
+
+    count = importer._merge_staging(
+        staging, destination=destination, stem="MyMod", replace=True
+    )
+
+    assert count == 1
+    assert expected.read_text() == "new"
+
+
+def test_merge_staging_drops_junk_members(tmp_path):
+    destination = tmp_path / "mods"
+    staging = build_staging(
+        tmp_path / "staging",
+        {"__MACOSX/x": "x", "MyMod/.DS_Store": "d", "MyMod/ok.ini": "o"},
+    )
+
+    count = importer._merge_staging(staging, destination=destination, stem="MyMod")
+
+    assert count == 1
+    assert (destination / "MyMod" / "ok.ini").read_text() == "o"
+    for path in destination.rglob("*"):
+        assert "__MACOSX" not in path.parts
+        assert path.name != ".DS_Store"
+
+
+def test_merge_staging_multi_top_wraps_under_stem(tmp_path):
+    destination = tmp_path / "mods"
+    staging = build_staging(tmp_path / "staging", {"a.ini": "a", "sub/b.buf": "b"})
+
+    count = importer._merge_staging(staging, destination=destination, stem="CoolPack")
+
+    assert count == 2
+    assert (destination / "CoolPack" / "a.ini").read_text() == "a"
+    assert (destination / "CoolPack" / "sub" / "b.buf").read_text() == "b"
+
+
+def test_merge_staging_empty_or_junk_only_returns_zero(tmp_path):
+    destination = tmp_path / "mods"
+    empty = build_staging(tmp_path / "empty", {})
+    junk_only = build_staging(tmp_path / "junk", {"__MACOSX/x": "x", ".DS_Store": "d"})
+
+    assert importer._merge_staging(empty, destination=destination, stem="pack") == 0
+    assert importer._merge_staging(junk_only, destination=destination, stem="pack") == 0
+    assert not destination.exists()

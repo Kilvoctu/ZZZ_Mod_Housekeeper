@@ -113,6 +113,23 @@ def test_collect_buffer_binds_reports_absent_file(tmp_path):
     assert binds[0].exists is False
 
 
+def test_collect_buffer_binds_uses_exists_callable_instead_of_disk(tmp_path):
+    ini_path = tmp_path / "m.ini"
+    ini_path.write_bytes(ABSENT_INI.encode("utf-8"))
+
+    probed = []
+    binds = collect_buffer_binds(
+        ABSENT_INI,
+        ini_path,
+        exists=lambda path: probed.append(path) or True,
+    )
+
+    assert len(binds) == 1
+    assert binds[0].path == tmp_path / "gone.buf"
+    assert binds[0].exists is True
+    assert probed == [tmp_path / "gone.buf"]
+
+
 SUFFIX_INI = "\r\n".join(  # noqa: FLY002
     [
         "[TextureOverrideBody]",

@@ -9,7 +9,7 @@ import pytest
 # noinspection PyPackageRequirements
 from PySide6.QtGui import QColor
 
-from tools import changelog, mods, repo
+from tools import changelog, fixer, mods, repo
 from tools.bufferbinds import BufferBind
 from tools.characters import CharacterDB, HashRef
 from tools.dumpdata import DumpData, DumpLayout
@@ -2150,6 +2150,42 @@ def test_analyze_mods_counts_broken_buffers_end_to_end(tmp_path):
     assert mods.aggregate_updates(mod_node) == "buffers"
 
 
+def test_build_tree_collects_ini_and_non_ini_files(tmp_path):
+    """The walk's fourth return value lists every regular file, not only .ini."""
+    root = tmp_path / "mods"
+    mod = root / "Mod" / "bufs"
+    mod.mkdir(parents=True)
+    (root / "Mod" / "m.ini").write_text("[TextureOverrideM]\n", encoding="utf-8")
+    (root / "Mod" / "bufs" / "t.buf").write_bytes(b"\x00")
+    (root / "readme.txt").write_text("hi", encoding="utf-8")
+
+    _tree, _skipped, _root_acts_as_mod, existing = mods._build_tree(root)
+
+    assert existing == {
+        str(root / "Mod" / "m.ini").lower(),
+        str(root / "Mod" / "bufs" / "t.buf").lower(),
+        str(root / "readme.txt").lower(),
+    }
+
+
+def test_exists_lookup_set_hit_fallback_and_absent(tmp_path):
+    """Set hits answer True case-insensitively; misses fall back to real disk."""
+    root = tmp_path / "mods"
+    mod = root / "Mod"
+    mod.mkdir(parents=True)
+    (mod / "Tex.Buf").write_bytes(b"\x00")
+
+    _tree, _skipped, _root_acts_as_mod, existing = mods._build_tree(root)
+    lookup = mods._exists_lookup(existing)
+
+    assert lookup(mod / "TEX.BUF") is True  # differently-cased set hit
+    fresh = mod / "new.buf"  # created after the walk: set miss
+    assert lookup(fresh) is False
+    fresh.write_bytes(b"\x00")
+    assert lookup(fresh) is True  # real-disk fallback answers truthfully
+    assert lookup(mod / "absent.buf") is False
+
+
 def test_analyze_structural_breakage_counts(tmp_path):
     db = CharacterDB()
     character = Character(
@@ -2258,3 +2294,50 @@ def test_create_mod_folder_rejects_existing(tmp_path):
 def test_create_mod_folder_requires_existing_parent(tmp_path):
     with pytest.raises(OSError):
         mods.create_mod_folder(Path(tmp_path) / "missing", "Fresh")
+
+
+def test_analyze_mods_reuses_ini_parse_memo(tmp_path, monkeypatch):
+    """A second analyze_mods run over unchanged files reuses the fixer memo.
+
+    Run one parses both .ini files through the spy; run two hits the memo
+    (spy count unchanged) while producing the identical inventory, summary,
+    per-node versions and variants.
+    """
+    fixer._INI_PARSE_MEMO.clear()
+    root = tmp_path / "mods"
+    (root / "ModA").mkdir(parents=True)
+    (root / "ModA" / "a.ini").write_text(
+        "[TextureOverrideA]\nhash = aaaa0000\n", encoding="utf-8"
+    )
+    (root / "ModA" / "b.ini").write_text(
+        "[TextureOverrideB]\nhash = bbbb0000\n", encoding="utf-8"
+    )
+    real_parse = fixer.parse_ini_facts
+    parse_calls: list[str] = []
+
+    def spy_parse(text):
+        parse_calls.append(text)
+        return real_parse(text)
+
+    monkeypatch.setattr(fixer, "parse_ini_facts", spy_parse)
+    data = version_data(
+        LADDER_ENTRIES, {"bbbb0000": [HashRef("CharaA", "Body", "ib")]}
+    )
+
+    tree1, summary1 = analyze_mods(tmp_path / "mods", data)
+    assert len(parse_calls) == 2
+
+    tree2, summary2 = analyze_mods(tmp_path / "mods", data)
+    assert len(parse_calls) == 2  # memo hit: no re-parse on the second run
+    assert inventory(tree2) == inventory(tree1)
+    assert {
+        node.name: version_of(node)
+        for node in walk_nodes(tree2)
+        if node.version is not None
+    } == {
+        node.name: version_of(node)
+        for node in walk_nodes(tree1)
+        if node.version is not None
+    }
+    assert summary2 == summary1
+    assert summary2.variants == summary1.variants

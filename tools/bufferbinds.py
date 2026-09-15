@@ -9,6 +9,7 @@ collectable and are skipped - diagnosis only covers binds a block declares.
 
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -93,15 +94,20 @@ def _resource_blocks(lines: list[str]) -> list[_BufferBlock]:
 
 
 def _bind_for_block(
-    hash_value: str, slot: str, resource: str, block: _BufferBlock, ini_dir: Path
+    hash_value: str,
+    slot: str,
+    resource: str,
+    block: _BufferBlock,
+    ini_dir: Path,
+    exists: Callable[[Path], bool] | None = None,
 ) -> BufferBind:
-    """One BufferBind resolved against the real filesystem."""
+    """One BufferBind resolved against the filesystem or a supplied lookup."""
     if block.filename:
         path = _normalize_path(ini_dir / block.filename)
-        exists = path.is_file()
+        present = path.is_file() if exists is None else exists(path)
     else:
         path = None
-        exists = False
+        present = False
     return BufferBind(
         hash=hash_value,
         slot=slot,
@@ -109,16 +115,20 @@ def _bind_for_block(
         stride=block.stride,
         filename=block.filename,
         path=path,
-        exists=exists,
+        exists=present,
     )
 
 
-def collect_buffer_binds(ini_text: str, ini_path: Path) -> list[BufferBind]:
+def collect_buffer_binds(
+    ini_text: str, ini_path: Path, exists: Callable[[Path], bool] | None = None
+) -> list[BufferBind]:
     """Buffer binds declared by this ini's TextureOverride hashes.
 
     Each (hash, vbN/ib) bind pairs with every Resource block whose
     variant-suffix-stripped name matches the bound resource; ``exists`` is
-    evaluated against the real filesystem at collection time.
+    evaluated against the real filesystem at collection time, or via the
+    supplied lookup callable when one is passed (analyze reuses the walk's
+    file set to avoid a stat per bind).
     """
     ini_dir = Path(ini_path).parent
     lines = _ini_lines(ini_text)
@@ -164,6 +174,6 @@ def collect_buffer_binds(ini_text: str, ini_path: Path) -> list[BufferBind]:
             if _TRAILING_VARIANT_RE.sub("", block.name).lower() != base:
                 continue
             result.append(
-                _bind_for_block(hash_value, slot, resource_name, block, ini_dir)
+                _bind_for_block(hash_value, slot, resource_name, block, ini_dir, exists)
             )
     return result

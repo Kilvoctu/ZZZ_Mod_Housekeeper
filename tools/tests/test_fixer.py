@@ -1,5 +1,6 @@
 """Tests for tools.fixer: scanning, applying, reverting, encodings and guards."""
 
+import os
 import re
 import shutil
 from datetime import datetime, timezone
@@ -2511,3 +2512,103 @@ def test_scan_repoint_ignores_eyebrow_sections(tmp_path):
         encoding="utf-8",
     )
     assert scan_files([path], data) == []
+
+
+def test_cached_ini_parse_memoizes_until_rewrite(tmp_path, monkeypatch):
+    """A memo hit skips the file read; a same-size rewrite with a bumped mtime misses."""
+    fixer._INI_PARSE_MEMO.clear()
+    path = tmp_path / "m.ini"
+    original = "[TextureOverrideA]\nhash = aaaa0000\n"
+    path.write_text(original, encoding="utf-8", newline="\n")
+    reads = []
+    real_read = fixer.read_ini_text
+
+    def spy_read(read_path):
+        reads.append(Path(read_path))
+        return real_read(read_path)
+
+    monkeypatch.setattr(fixer, "read_ini_text", spy_read)
+
+    text, hints, sections = fixer.cached_ini_parse(path)
+    assert text == original
+    assert hints == {"aaaa0000": {"a"}}
+    assert [section.name for section in sections] == ["TextureOverrideA"]
+    assert reads == [path]
+
+    assert fixer.cached_ini_parse(path) == (text, hints, sections)
+    assert reads == [path]  # memo hit: no second read
+
+    rewritten = b"[TextureOverrideB]\nhash = bbbb1111\n"
+    assert len(rewritten) == len(original.encode("utf-8"))
+    path.write_bytes(rewritten)
+    os.utime(path, (1_000_000_000, 1_000_000_000))  # deterministic mtime bump
+
+    text2, hints2, _sections2 = fixer.cached_ini_parse(path)
+    assert reads == [path, path]  # mtime key changed: re-read despite same size
+    assert text2 == rewritten.decode("utf-8")
+    assert hints2 == {"bbbb1111": {"b"}}
+
+
+def test_cached_ini_parse_evicts_oldest_past_cap(tmp_path, monkeypatch):
+    """Inserting past _INI_PARSE_MEMO_CAP evicts the least-recently-used entry."""
+    fixer._INI_PARSE_MEMO.clear()
+    monkeypatch.setattr(fixer, "_INI_PARSE_MEMO_CAP", 2)
+    paths = []
+    for index, name in enumerate(("a.ini", "b.ini", "c.ini")):
+        path = tmp_path / name
+        path.write_text(
+            f"[TextureOverrideX{index}]\nhash = aaaa000{index}\n", encoding="utf-8"
+        )
+        fixer.cached_ini_parse(path)
+        paths.append(path)
+
+    assert len(fixer._INI_PARSE_MEMO) == 2
+    memo_paths = {key[0] for key in fixer._INI_PARSE_MEMO}
+    assert str(paths[0]) not in memo_paths
+    assert {str(paths[1]), str(paths[2])} <= memo_paths
+
+
+def test_cached_ini_parse_missing_or_directory_is_none(tmp_path):
+    """Missing paths and directory paths return None and are never memoized."""
+    fixer._INI_PARSE_MEMO.clear()
+    missing = tmp_path / "missing.ini"
+
+    assert fixer.cached_ini_parse(missing) is None
+    assert fixer.cached_ini_parse(tmp_path) is None
+    assert fixer._INI_PARSE_MEMO == {}
+
+
+def test_cached_ini_parse_retries_after_failed_read(tmp_path, monkeypatch):
+    """A transient OSError read is not memoized: the next call parses fresh."""
+    fixer._INI_PARSE_MEMO.clear()
+    path = tmp_path / "m.ini"
+    content = "[TextureOverrideA]\nhash = aaaa0000\n"
+    path.write_text(content, encoding="utf-8", newline="\n")
+    real_read = fixer.read_ini_text
+    failed = {"once": False}
+
+    def flaky_read(_path):
+        if not failed["once"]:
+            failed["once"] = True
+            raise OSError("transient read failure")
+        return real_read(_path)
+
+    monkeypatch.setattr(fixer, "read_ini_text", flaky_read)
+
+    assert fixer.cached_ini_parse(path) is None
+    assert fixer._INI_PARSE_MEMO == {}
+
+    text, hints, _sections = fixer.cached_ini_parse(path)
+    assert text == content
+    assert hints == {"aaaa0000": {"a"}}
+
+
+def test_cached_ini_parse_undecodable_bytes_raise(tmp_path):
+    """Undecodable bytes raise ValueError (matching read_ini_text) and skip the memo."""
+    fixer._INI_PARSE_MEMO.clear()
+    path = tmp_path / "broken.ini"
+    path.write_bytes(b"\xff\xfe\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+
+    with pytest.raises(ValueError):
+        fixer.cached_ini_parse(path)
+    assert fixer._INI_PARSE_MEMO == {}
