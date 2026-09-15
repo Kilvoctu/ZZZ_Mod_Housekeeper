@@ -9,9 +9,19 @@ holds one JSON description plus the referenced ``.buf`` binaries and the mesh
 Stride rule: a buffer's byte stride is the sum of its ``D3D11ElementList``
 ``ByteWidth`` values (all elements share one ``ExtractSlot``), e.g. a face
 Texcoord of 16 + 4×8 = 48 bytes.
+
+v2 schema: ``<cache>/v2/<MeshFolder>/`` groups one mesh reference — a
+``hash.json`` list (one entry per object mesh: component/object metadata
+plus position/blend/texcoord/ib hashes) beside ``<Name>-vb0=<position_vb>.txt``
+text vertex dumps (``-ib=*.txt`` files are ignored).  Entries dedupe by
+``position_vb`` (first wins) and skip when no vb0 txt carries that hash; the
+vb0 header's element blocks give the texcoord stream layout (COLOR first,
+then TEXCOORDs sorted by index) and the vertex count, while the vertex body
+(POSITION/BLENDWEIGHTS/BLENDINDICES) is parsed lazily via ``V2Dump.vertices``.
 """
 
 import json
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -20,6 +30,36 @@ from .characters import CharacterDB
 from .structure import latin_suffix
 
 _ROLES = frozenset({"position", "texcoord", "blend"})
+
+_DXGI_TOKEN = {
+    "R8G8B8A8_UNORM": "4B",
+    "R16G16_FLOAT": "2e",
+    "R32G32_FLOAT": "2f",
+    "R16G16B16A16_FLOAT": "4e",
+    "R32G32B32_FLOAT": "3f",
+    "R32G32B32A32_FLOAT": "4f",
+    "R32G32_UINT": "2I",
+    "R32G32B32A32_UINT": "4I",
+    "R16G16B16A16_UINT": "4H",
+}
+_TOKEN_BYTES = {"B": 1, "e": 2, "f": 4, "I": 4, "H": 2}
+
+_VB0Vertices = tuple[
+    list[tuple[float, float, float]],
+    list[tuple[tuple[float, ...], tuple[int, ...]]],
+]
+
+_ELEMENT_RE = re.compile(
+    r"SemanticName:\s*(\w+)\s*\n\s*"
+    r"SemanticIndex:\s*(\d+)\s*\n\s*"
+    r"Format:\s*(\w+)\s*\n\s*"
+    r"InputSlot:\s*(\d+)\s*\n\s*"
+    r"AlignedByteOffset:\s*(\d+)"
+)
+_VERTEX_LINE_RE = re.compile(
+    r"(?m)^vb\d+\[(\d+)]\+(\d+)\s+([A-Za-z_]+)(\d+)?:\s*(.*)$"
+)
+_VERTEX_COUNT_RE = re.compile(r"(?m)^vertex count:\s*(\d+)")
 
 
 @dataclass(frozen=True)
@@ -32,12 +72,46 @@ class DumpLayout:
 
 
 @dataclass
+class V2Dump:
+    """One v2 mesh reference: a hash.json entry plus its vb0 dump.
+
+    ``char_latin``/``comp`` come from the mesh folder name; the hash fields
+    are lowercased ('' when absent); ``texcoord_format`` holds the texcoord
+    stream's struct tokens (COLOR first, then TEXCOORDs sorted by index) or
+    None when the dump has no usable texcoord elements, with
+    ``texcoord_stride`` their total byte width; ``vertex_count`` is the vb0
+    header's declared count.  ``vertices`` lazily parses the vb0 body.
+    """
+
+    char_latin: str
+    comp: str
+    position_vb: str
+    blend_vb: str
+    texcoord_vb: str
+    ib: str
+    texcoord_format: tuple[str, ...] | None
+    texcoord_stride: int
+    vertex_count: int
+    vb0_path: Path | None
+    _vertex_cache: _VB0Vertices | None = field(default=None, repr=False, compare=False)
+
+    def vertices(self) -> _VB0Vertices:
+        """(positions, blends) parsed from the vb0 body; cached after first call."""
+        cached = self._vertex_cache
+        if cached is None:
+            cached = _parse_vb0_vertices(self.vb0_path)
+            self._vertex_cache = cached
+        return cached
+
+
+@dataclass
 class DumpData:
     """Everything parsed from the fix-tool dump cache.
 
     ``layouts``/``current_hashes``/``binaries`` key by (char_latin, comp, role)
     with role the lowercased buffer Category; ``vertexlimit``/``ibs`` key by
     (char_latin, comp).  ``binaries`` holds only shipped (existing) files.
+    ``v2`` holds the v2 mesh dumps keyed by (char_latin, comp).
     """
 
     layouts: dict[tuple[str, str, str], DumpLayout] = field(default_factory=dict)
@@ -45,6 +119,7 @@ class DumpData:
     vertexlimit: dict[tuple[str, str], str] = field(default_factory=dict)
     binaries: dict[tuple[str, str, str], Path] = field(default_factory=dict)
     ibs: dict[tuple[str, str], str] = field(default_factory=dict)
+    v2: dict[tuple[str, str], list[V2Dump]] = field(default_factory=dict)
 
 
 def load_dump_data(cache_dir: Path, db: CharacterDB | None = None) -> DumpData:
@@ -56,6 +131,7 @@ def load_dump_data(cache_dir: Path, db: CharacterDB | None = None) -> DumpData:
     table character name (whose latin name is recorded), falling back to the
     first dash when no db is given or nothing matches.  Undecodable JSONs are
     skipped silently; a missing or empty cache yields an empty DumpData.
+    Afterward the ``v2`` subfolder is scanned for the per-mesh v2 schema.
     """
     data = DumpData()
     cache_dir = Path(cache_dir)
@@ -74,6 +150,7 @@ def load_dump_data(cache_dir: Path, db: CharacterDB | None = None) -> DumpData:
         if not isinstance(payload, dict):
             continue
         _parse_dump_json(payload, folder, _split_folder(folder.name, db), data)
+    _load_v2_dumps(cache_dir, db, data)
     return data
 
 
@@ -189,3 +266,154 @@ def _parse_buffer_entry(
         return None
     layout = DumpLayout(stride=stride, slot=slot, filename=filename)
     return role, layout, hash_by_role.get(role, "")
+
+
+def _load_v2_dumps(cache_dir: Path, db: CharacterDB | None, data: DumpData) -> None:
+    """Fold every ``<cache>/v2`` mesh folder into ``data.v2`` (v2 schema above)."""
+    v2_root = cache_dir / "v2"
+    if not v2_root.is_dir():
+        return
+    for folder in sorted(v2_root.iterdir(), key=lambda path: path.name):
+        if not folder.is_dir():
+            continue
+        try:
+            payload = json.loads(
+                folder.joinpath("hash.json").read_text(encoding="utf-8-sig")
+            )
+        except (OSError, ValueError):
+            continue
+        if not isinstance(payload, list):
+            continue
+        _collect_v2_folder(payload, folder, _split_folder(folder.name, db), data)
+
+
+def _collect_v2_folder(
+    payload: list, folder: Path, split: tuple[str, str], data: DumpData
+) -> None:
+    """Append one V2Dump per deduped hash.json entry that has a vb0 dump."""
+    char_latin, comp = split
+    key2 = (char_latin, comp)
+    seen: set[str] = set()
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        position_vb = _v2_hash(entry, "position_vb")
+        if not position_vb or position_vb in seen:
+            continue
+        vb0_path = _find_v2_vb0(folder, position_vb)
+        if vb0_path is None:
+            continue
+        seen.add(position_vb)
+        elements, vertex_count = _parse_vb0_header(vb0_path)
+        texcoord_format = _texcoord_layout(elements)
+        data.v2.setdefault(key2, []).append(
+            V2Dump(
+                char_latin=char_latin,
+                comp=comp,
+                position_vb=position_vb,
+                blend_vb=_v2_hash(entry, "blend_vb"),
+                texcoord_vb=_v2_hash(entry, "texcoord_vb"),
+                ib=_v2_hash(entry, "ib"),
+                texcoord_format=texcoord_format,
+                texcoord_stride=_texcoord_stride(texcoord_format),
+                vertex_count=vertex_count,
+                vb0_path=vb0_path,
+            )
+        )
+
+
+def _v2_hash(entry: dict, key: str) -> str:
+    """Lowercased string hash from one hash.json entry; '' when absent."""
+    value = entry.get(key)
+    return value.lower() if isinstance(value, str) else ""
+
+
+def _find_v2_vb0(folder: Path, position_vb: str) -> Path | None:
+    """The ``*-vb0=<position_vb>.txt`` dump, matched by the filename hash."""
+    matches = sorted(folder.glob(f"*-vb0={position_vb}.txt"), key=lambda path: path.name)
+    return matches[0] if matches else None
+
+
+def _parse_vb0_header(path: Path) -> tuple[list[tuple[str, int, str]], int]:
+    """(element triples, declared vertex count) from one -vb0 txt header.
+
+    Elements are the SemanticName/SemanticIndex/Format blocks before the
+    ``vertex-data:`` line; unreadable or malformed files give ([], 0).
+    """
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], 0
+    head, _sep, _body = text.partition("vertex-data:")
+    elements = [
+        (match.group(1).upper(), int(match.group(2)), match.group(3))
+        for match in _ELEMENT_RE.finditer(head)
+    ]
+    count_match = _VERTEX_COUNT_RE.search(head)
+    count = int(count_match.group(1)) if count_match else 0
+    return elements, count
+
+
+def _texcoord_layout(
+    elements: list[tuple[str, int, str]],
+) -> tuple[str, ...] | None:
+    """Texcoord stream tokens: the COLOR element first, then TEXCOORDs sorted.
+
+    Upstream rule: COLOR sits in front of the stream and the TEXCOORDs follow
+    ordered by SemanticIndex; unknown D3D formats or no COLOR/TEXCOORD at all
+    give None.
+    """
+    picked = [element for element in elements if element[0] == "COLOR"][:1]
+    picked += sorted(
+        (element for element in elements if element[0] == "TEXCOORD"),
+        key=lambda element: element[1],
+    )
+    tokens = [_DXGI_TOKEN.get(element[2], "") for element in picked]
+    if not tokens or not all(tokens):
+        return None
+    return tuple(tokens)
+
+
+def _texcoord_stride(texcoord_format: tuple[str, ...] | None) -> int:
+    """Total byte width of the texcoord tokens ('4f' is 16, '4B' is 4)."""
+    if texcoord_format is None:
+        return 0
+    return sum(_TOKEN_BYTES[token[-1]] * int(token[:-1]) for token in texcoord_format)
+
+
+def _parse_vb0_vertices(path: Path | None) -> _VB0Vertices:
+    """(positions, blends) from one -vb0 body; failures yield empty lists.
+
+    Each ``vb0[i]+<offset>`` body line fills vertex i: POSITION0 gives
+    (x, y, z), BLENDWEIGHTS0 four weights and BLENDINDICES0 four int
+    indices; a blend entry needs both lines (upstream rule).
+    """
+    if path is None:
+        return [], []
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return [], []
+    _head, _sep, body = text.partition("vertex-data:")
+    positions: dict[int, tuple[float, float, float]] = {}
+    weights: dict[int, tuple[float, ...]] = {}
+    indices: dict[int, tuple[int, ...]] = {}
+    for match in _VERTEX_LINE_RE.finditer(body):
+        try:
+            values = [float(value) for value in match.group(5).split(",")]
+        except ValueError:
+            continue
+        index = int(match.group(1))
+        semantic = match.group(3).upper()
+        if semantic == "POSITION" and match.group(4) in (None, "0"):
+            if len(values) < 3:
+                continue
+            positions[index] = (values[0], values[1], values[2])
+        elif semantic == "BLENDWEIGHTS":
+            weights[index] = tuple(values[:4])
+        elif semantic == "BLENDINDICES":
+            indices[index] = tuple(int(value) for value in values[:4])
+    return (
+        [positions[key] for key in sorted(positions)],
+        [(weights[key], indices[key]) for key in sorted(weights) if key in indices],
+    )

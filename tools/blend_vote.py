@@ -9,6 +9,11 @@ vote per disagreeing index slot.
 The derivation refuses to guess: derive_blend_vote_map() returns an empty map
 with a refused report unless strict alignment, count, ambiguity, consistency,
 injectivity, and match-rate gates all pass, and it never writes anything.
+Subdivided or edited meshes refuse that strict pairing, so a target may also
+carry the component's v2 mesh dump: derive_grid_vote_map() then pairs mod and
+dump vertices by a 0.010-unit spatial-grid radius instead, votes over
+weight-ranked blend slots, and resolves the votes greedily one-to-one — a
+tolerant fallback whose marker records the "grid" action.
 scan_blend_vote_targets() pairs the same buffers in mod .inis against
 dump-covered components (skipping hashes the table-driven remap owns);
 apply_blend_vote_remap() rewrites the blend buffer from a voted map and
@@ -17,10 +22,12 @@ records a marker in the shared "_blend_remaps.json" used by the table pass.
 
 import os
 import re
+import struct
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from hashlib import sha256
+from math import floor
 from pathlib import Path
 
 from .backups import backup_path_for, included_ini_files
@@ -32,12 +39,21 @@ from .blend_remap import (
     resolve_blend_table,
     write_blend_state,
 )
-from .dumpdata import DumpData
+from .dumpdata import DumpData, V2Dump
 from .fixer import read_ini_text
 
 _BLEND_STRIDE = 32
 _POSITION_STRIDE = 40
 _MIN_MATCH_RATE = 0.99
+_GRID_RADIUS = 0.010
+_GRID_MAX_K = 6
+_GRID_WEIGHT_MIN = 0.01
+_GRID_WEIGHT_EPS = 0.05
+_GRID_MIN_RATIO = 0.05
+_GRID_LOW_VOTES = 20
+_GRID_OFFSETS = tuple(
+    (dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1) for dz in (-1, 0, 1)
+)
 _RESOURCE_HEADER_PREFIX = "[Resource"
 _HASH_LINE_RE = re.compile(r"^hash ?= ?(?P<h>[0-9A-Fa-f]{8})$", re.IGNORECASE)
 _VB0_LINE_RE = re.compile(r"^vb0 ?= ?Resource(?P<name>.+)$", re.IGNORECASE)
@@ -261,9 +277,206 @@ def derive_blend_vote_map(
     )
 
 
+def _resolve_grid_votes(votes: dict[int, dict[int, int]]) -> dict[int, int]:
+    """One-to-one old→new map picked greedily by descending vote count.
+
+    Mirrors the upstream resolve: the flat (old, new) votes sort by count
+    descending (stable, so equal counts keep first-seen order) and a vote is
+    assigned only when both its old and its new index are still unassigned.
+    """
+    flat = [
+        ((old, new), count)
+        for old, counter in votes.items()
+        for new, count in counter.items()
+    ]
+    flat.sort(key=lambda item: -item[1])
+    mapping: dict[int, int] = {}
+    used_new: set[int] = set()
+    for (old, new), _count in flat:
+        if old in mapping or new in used_new:
+            continue
+        mapping[old] = new
+        used_new.add(new)
+    return mapping
+
+
+def derive_grid_vote_map(
+    mod_position: bytes, mod_blend: bytes, dump: V2Dump
+) -> tuple[dict[int, int], VoteReport]:
+    """(map, report) voted over radius-paired mod/dump vertices; ({}, refusal) when the grid path refuses.
+
+    Tolerant fallback for subdivided or edited meshes the strict derivation
+    refuses: ``dump`` is the component's v2 mesh dump whose ``vertices()``
+    supply the dump-side positions and ``(weights, indices)`` blend records.
+    Mod vertices land in a spatial grid of ``_GRID_RADIUS``-sized cells keyed
+    by ``floor(coord / radius)``; every dump vertex keeps at most
+    ``_GRID_MAX_K`` nearest in-radius mod vertices and each pair votes per
+    weight-ranked slot when both weights reach ``_GRID_WEIGHT_MIN``, differ by
+    at most ``_GRID_WEIGHT_EPS``, and the indices differ, once per old index
+    within the pair. Refusals: stride-misaligned mod buffers, mismatched mod
+    blend/position counts, zero mod vertices, a dump without blend data, no
+    pair at all, or a matched ratio below ``_GRID_MIN_RATIO``. Conflicting
+    votes resolve greedily one-to-one (``_resolve_grid_votes``), so the result
+    is always injective; an identity result — only the empty map, since equal
+    indices never vote — comes back ok with an empty map.
+    """
+    if len(mod_blend) % _BLEND_STRIDE:
+        return {}, _refusal_report(
+            0,
+            0,
+            0,
+            0,
+            {},
+            f"mod blend length {len(mod_blend)} is not a multiple of {_BLEND_STRIDE}",
+        )
+    if len(mod_position) % _POSITION_STRIDE:
+        return {}, _refusal_report(
+            0,
+            0,
+            0,
+            0,
+            {},
+            f"mod position length {len(mod_position)} is not a multiple of "
+            f"{_POSITION_STRIDE}",
+        )
+    mod_blend_count = len(mod_blend) // _BLEND_STRIDE
+    mod_position_count = len(mod_position) // _POSITION_STRIDE
+    if mod_blend_count != mod_position_count:
+        return {}, _refusal_report(
+            mod_blend_count,
+            0,
+            0,
+            0,
+            {},
+            f"mod blend has {mod_blend_count} vertices but mod position has "
+            f"{mod_position_count}",
+        )
+    if mod_blend_count == 0:
+        return {}, _refusal_report(0, 0, 0, 0, {}, "no vertices to vote on")
+    dump_positions, dump_blends = dump.vertices()
+    if not dump_positions or len(dump_positions) != len(dump_blends):
+        return {}, _refusal_report(
+            mod_blend_count,
+            0,
+            0,
+            0,
+            {},
+            f"the v2 dump lacks blend data ({len(dump_positions)} positions, "
+            f"{len(dump_blends)} blend records)",
+        )
+
+    grid: dict[tuple[int, int, int], list[int]] = {}
+    for vertex in range(mod_blend_count):
+        x, y, z = struct.unpack_from("<3f", mod_position, vertex * _POSITION_STRIDE)
+        grid.setdefault(
+            (
+                floor(x / _GRID_RADIUS),
+                floor(y / _GRID_RADIUS),
+                floor(z / _GRID_RADIUS),
+            ),
+            [],
+        ).append(vertex)
+
+    limit = _GRID_RADIUS * _GRID_RADIUS
+    votes: dict[int, dict[int, int]] = {}
+    paired: set[int] = set()
+    for index, (dump_w, dump_i) in enumerate(dump_blends):
+        px, py, pz = dump_positions[index]
+        base = (
+            floor(px / _GRID_RADIUS),
+            floor(py / _GRID_RADIUS),
+            floor(pz / _GRID_RADIUS),
+        )
+        found: list[tuple[float, int]] = []
+        for dx, dy, dz in _GRID_OFFSETS:
+            cell = grid.get((base[0] + dx, base[1] + dy, base[2] + dz))
+            if not cell:
+                continue
+            for vertex in cell:
+                mx, my, mz = struct.unpack_from(
+                    "<3f", mod_position, vertex * _POSITION_STRIDE
+                )
+                ax = mx - px
+                ay = my - py
+                az = mz - pz
+                d2 = ax * ax + ay * ay + az * az
+                if d2 <= limit:
+                    found.append((d2, vertex))
+        if not found:
+            continue
+        found.sort()
+        del found[_GRID_MAX_K:]
+        paired.update(vertex for _d2, vertex in found)
+        order_d = sorted(range(4), key=lambda slot: -dump_w[slot])
+        for _d2, vertex in found:
+            mod_w = struct.unpack_from("<4f", mod_blend, vertex * _BLEND_STRIDE)
+            mod_i = struct.unpack_from("<4I", mod_blend, vertex * _BLEND_STRIDE + 16)
+            order_m = sorted(range(4), key=lambda slot: -mod_w[slot])
+            voted: set[int] = set()
+            for a, b in zip(order_m, order_d):
+                if mod_w[a] < _GRID_WEIGHT_MIN or dump_w[b] < _GRID_WEIGHT_MIN:
+                    break
+                if abs(mod_w[a] - dump_w[b]) > _GRID_WEIGHT_EPS:
+                    continue
+                old = mod_i[a]
+                new = dump_i[b]
+                if old == new or old in voted:
+                    continue
+                voted.add(old)
+                counter = votes.setdefault(old, {})
+                counter[new] = counter.get(new, 0) + 1
+
+    matched = len(paired)
+    if matched == 0:
+        return {}, _refusal_report(
+            mod_blend_count,
+            0,
+            mod_blend_count,
+            0,
+            {},
+            "nothing within the grid radius",
+        )
+    if matched / mod_blend_count < _GRID_MIN_RATIO:
+        return {}, _refusal_report(
+            mod_blend_count,
+            matched,
+            mod_blend_count - matched,
+            0,
+            {},
+            f"not the same mesh (match ratio {matched}/{mod_blend_count} "
+            f"below {_GRID_MIN_RATIO})",
+        )
+    resolved = _resolve_grid_votes(votes)
+    if not resolved:
+        return {}, VoteReport(
+            ok=True,
+            total=mod_blend_count,
+            matched=matched,
+            unmatched=mod_blend_count - matched,
+            ambiguous=0,
+            conflicts={},
+            map={},
+            refusal="",
+        )
+    return resolved, VoteReport(
+        ok=True,
+        total=mod_blend_count,
+        matched=matched,
+        unmatched=mod_blend_count - matched,
+        ambiguous=0,
+        conflicts={},
+        map=resolved,
+        refusal="",
+    )
+
+
 @dataclass(frozen=True)
 class BlendVoteTarget:
-    """One blend .buf to vote-remap, with its bound position buffer and dump sources."""
+    """One blend .buf to vote-remap, with its bound position buffer and dump sources.
+
+    ``grid`` optionally carries the component's v2 mesh dump backing the
+    tolerant spatial-grid fallback when the strict derivation refuses.
+    """
 
     hash: str
     resource: str
@@ -272,6 +485,7 @@ class BlendVoteTarget:
     dump_blend: Path
     dump_position: Path
     source: str
+    grid: V2Dump | None = None
 
 
 @dataclass(frozen=True)
@@ -425,6 +639,15 @@ def _dump_key2_for_hash(dumps: DumpData, section_hash: str) -> tuple[str, str] |
     return (role_matches[0][0], role_matches[0][1]) if role_matches else None
 
 
+def _grid_dump_for(dumps: DumpData, key2: tuple[str, str]) -> V2Dump | None:
+    """First v2 mesh dump for the component whose vb0 body has blend vertices."""
+    for dump in dumps.v2.get(key2, ()):
+        positions, blends = dump.vertices()
+        if positions and blends:
+            return dump
+    return None
+
+
 def _vote_targets_in_ini(
     ini_text: str, ini_path: Path, dumps: DumpData, tables: BlendTables
 ) -> list[BlendVoteTarget]:
@@ -432,7 +655,10 @@ def _vote_targets_in_ini(
 
     A section is skipped unless the dump covers its hash and both buffers align
     to their strides and match the dump's vertex counts; shipped-table hashes
-    belong to the table-driven pass.
+    belong to the table-driven pass. Count-mismatched sections still vote when
+    the component's v2 mesh dump carries vertex data — the target then carries
+    it as the ``grid`` fallback, which count-matching targets attach too when
+    available.
     """
     ini_dir = Path(ini_path).parent
     sections = _scan_sections(_ini_lines(ini_text))
@@ -477,11 +703,13 @@ def _vote_targets_in_ini(
             or dump_position_count is None
         ):
             continue
-        if (
-            mod_blend_count != dump_blend_count
-            or mod_position_count != dump_position_count
-            or mod_blend_count != mod_position_count
-        ):
+        counts_equal = (
+            mod_blend_count == dump_blend_count
+            and mod_position_count == dump_position_count
+            and mod_blend_count == mod_position_count
+        )
+        grid = _grid_dump_for(dumps, key2)
+        if not counts_equal and grid is None:
             continue
         targets.append(
             BlendVoteTarget(
@@ -492,6 +720,7 @@ def _vote_targets_in_ini(
                 dump_blend=dump_blend_path,
                 dump_position=dump_position_path,
                 source=f"{key2[0]}/{key2[1]}",
+                grid=grid,
             )
         )
     return targets
@@ -527,7 +756,10 @@ def apply_blend_vote_remap(
 
     Idempotent like apply_remap: when the store marker's after-hash already
     matches the live buffer nothing is read further, written, or logged. The
-    marker lands in the shared "_blend_remaps.json" before the buffer write.
+    strict derivation runs first; when it refuses and the target carries a v2
+    mesh dump, the spatial-grid derivation retries and the marker records the
+    "grid" action. The marker lands in the shared "_blend_remaps.json" before
+    the buffer write.
     """
     mods_dir = Path(mods_dir)
     blend_path = Path(target.blend_path)
@@ -553,17 +785,30 @@ def apply_blend_vote_remap(
             )
             return False
     mod_position, dump_blend, dump_position = others
+    action = "vote"
+    source = target.source
     vote_map, report = derive_blend_vote_map(
         blend_bytes, mod_position, dump_blend, dump_position
     )
+    if not report.ok and target.grid is not None:
+        action = "grid"
+        source = f"{target.source} (grid)"
+        vote_map, report = derive_grid_vote_map(mod_position, blend_bytes, target.grid)
+        if not report.ok:
+            log(
+                f"blend vote skipped (grid): {blend_path.name} — {report.refusal} "
+                f"(match {report.matched}/{report.total})"
+            )
+            return False
     if not report.ok:
         log(
             f"blend vote skipped: {blend_path.name} — {report.refusal} "
             f"(match {report.matched}/{report.total})"
         )
         return False
+    label = "vote" if action == "vote" else "grid vote"
     if not vote_map:
-        log(f"blend indices already current (vote): {blend_path.name}")
+        log(f"blend indices already current ({label}): {blend_path.name}")
         return False
     new, changed = remap_bytes(blend_bytes, vote_map)
     stamp = int(time.time() * 1000)
@@ -577,16 +822,18 @@ def apply_blend_vote_remap(
         "before": sha_now,
         "hash": target.hash,
         "stamp": stamp,
-        "action": "vote",
-        "source": target.source,
+        "action": action,
+        "source": source,
     }
     write_blend_state(store_dir, mods_dir, state)
     blend_path.write_bytes(new)
     message = (
-        f"remapped blend indices (vote): {blend_path.name} — {changed} index "
+        f"remapped blend indices ({label}): {blend_path.name} — {changed} index "
         f"values changed, {len(vote_map)} mappings derived from {target.source} "
         f"(match {report.matched}/{report.total})"
     )
+    if action == "grid" and len(vote_map) < _GRID_LOW_VOTES:
+        message += " (few mappings — manual review recommended)"
     if destination is not None:
         message += f" (backup: {destination.name})"
     log(message)

@@ -1,4 +1,8 @@
-"""Fetch/refresh the ZZZ-Model-Hash data into a local cache directory."""
+"""Fetch/refresh the ZZZ-Model-Hash data into a local cache directory.
+
+Dump-kind variants additionally extract the fix-tool v2 per-mesh dumps
+under ``<cache>/v2``.
+"""
 
 import io
 import json
@@ -21,6 +25,7 @@ LOWVARM_CHARACTERS_DIR_NAME = "角色hash表低显"
 FIX_TOOL_REPO_URL = "https://github.com/hefengchang/ZZZ-Model-Fix-Tool.git"
 
 _DUMP_SUBFOLDER = "版本修复工具/dump"
+_V2_DUMP_SUBFOLDER = "ZZZ_Index_Vertex_Fix_Tool_v2/Dump"
 
 _TIMEOUT_SECONDS = 300
 _MARKER_NAME = ".zzzhashfix.json"
@@ -36,8 +41,8 @@ class RepoVariant:
     """One upstream data-repo variant.
 
     ``hash`` kinds ship the hash datasets (changelog + character tables);
-    the ``dump`` kind ships the fix-tool vertex dumps, of which only one
-    subfolder is extracted into the cache.
+    the ``dump`` kind ships the fix-tool vertex dumps, extracted into the
+    cache root with the v2 tool's dumps under ``v2``.
     """
 
     key: str
@@ -188,17 +193,29 @@ def _archive_url(variant: str) -> str:
 
 
 def _download_archive(variant: str, target: Path) -> None:
-    """Download and unpack the variant's tip archive into ``target``."""
+    """Download and unpack the variant's tip archive into ``target``.
+
+    Dump-kind variants additionally extract the v2 tool's ``Dump`` subfolder
+    under ``<target>/v2``, skipping its per-mesh index-dump text files.
+    """
     staging = Path(
         tempfile.mkdtemp(prefix=f"{target.name}-staging-", dir=str(target.parent))
     )
     try:
         body, etag = _fetch_url(_archive_url(variant))
+        dump_kind = REPO_VARIANTS[variant].kind == "dump"
         _extract_archive(
             body,
             staging,
-            subfolder=_DUMP_SUBFOLDER if REPO_VARIANTS[variant].kind == "dump" else None,
+            subfolder=_DUMP_SUBFOLDER if dump_kind else None,
         )
+        if dump_kind:
+            _extract_archive(
+                body,
+                staging / "v2",
+                subfolder=_V2_DUMP_SUBFOLDER,
+                exclude=_is_index_dump_member,
+            )
         _replace_dir(target, staging)
         _write_marker(target, etag=etag, sha=_head_sha(variant))
     finally:
@@ -243,13 +260,17 @@ def _head_sha(variant: str) -> str:
 
 
 def _extract_archive(
-    archive: bytes, destination: Path, subfolder: str | None = None
+    archive: bytes,
+    destination: Path,
+    subfolder: str | None = None,
+    exclude: Callable[[str], bool] | None = None,
 ) -> None:
     """Unpack a GitHub zip archive, dropping its single top-level folder.
 
     With ``subfolder``, only members under ``<top>/<subfolder>/`` are unpacked
     and their paths are rebased so the subfolder's contents land in the
-    destination root.
+    destination root.  With ``exclude``, members whose rebased relative path
+    is rejected are skipped.
     """
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         members = zf.namelist()
@@ -269,12 +290,20 @@ def _extract_archive(
             rel_parts = rel.split("/")
             if ".." in rel_parts:
                 raise RepoError("archive member escapes the target directory")
+            if exclude is not None and exclude(rel):
+                continue
             if member.endswith("/"):
                 destination.joinpath(*rel_parts).mkdir(parents=True, exist_ok=True)
                 continue
             dest = destination.joinpath(*rel_parts)
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(zf.read(member))
+
+
+def _is_index_dump_member(rel: str) -> bool:
+    """Whether ``rel`` names one of the v2 tool's per-mesh index-dump text files."""
+    name = rel.rsplit("/", 1)[-1]
+    return "-ib=" in name and name.endswith(".txt")
 
 
 def _replace_dir(target: Path, staging: Path) -> None:

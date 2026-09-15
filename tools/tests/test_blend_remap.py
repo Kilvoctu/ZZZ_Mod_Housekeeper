@@ -581,6 +581,7 @@ def test_blend_marker_kind_distinguishes_action_and_legacy(tmp_path):
                 "legacy.buf": {"hash": "aabbccdd", "stamp": 1},
                 "vote.buf": {"action": "vote", "hash": "ff36809b", "stamp": 2},
                 "table.buf": {"action": "table", "hash": "aabbccdd", "stamp": 3},
+                "grid.buf": {"action": "grid", "hash": "8899aabb", "stamp": 4},
                 "junk.buf": "not-a-marker",
             }
         ),
@@ -590,6 +591,7 @@ def test_blend_marker_kind_distinguishes_action_and_legacy(tmp_path):
     assert blend_marker_kind(store, mods, mods / "legacy.buf") == "blend remap (table)"
     assert blend_marker_kind(store, mods, mods / "vote.buf") == "blend remap (vote)"
     assert blend_marker_kind(store, mods, mods / "table.buf") == "blend remap (table)"
+    assert blend_marker_kind(store, mods, mods / "grid.buf") == "blend remap (vote)"
     assert blend_marker_kind(store, mods, mods / "ghost.buf") is None
     assert blend_marker_kind(store, mods, mods / "junk.buf") is None
 

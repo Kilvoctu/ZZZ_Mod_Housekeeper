@@ -359,7 +359,7 @@ def blend_marker_kind(store_dir: Path, mods_dir: Path, live_path: Path) -> str |
         return None
     return (
         "blend remap (vote)"
-        if marker.get("action") == "vote"
+        if marker.get("action") in ("vote", "grid")
         else "blend remap (table)"
     )
 

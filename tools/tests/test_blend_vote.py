@@ -1,9 +1,11 @@
 """Tests for tools.blend_vote: strict old→new index derivation from record-matched
 mod/dump blend and position buffers, using synthetic stride-32/stride-40 buffers,
-plus the ini scan and marker-shared vote apply half."""
+plus the tolerant spatial-grid derivation over v2 mesh dumps, the ini scan and
+the marker-shared vote apply half with its grid fallback."""
 
 import hashlib
 import json
+import struct
 from pathlib import Path
 
 from tools.blend_remap import BlendTables, blend_state_path
@@ -12,9 +14,10 @@ from tools.blend_vote import (
     BlendVoteTarget,
     apply_blend_vote_remap,
     derive_blend_vote_map,
+    derive_grid_vote_map,
     scan_blend_vote_targets,
 )
-from tools.dumpdata import DumpData, DumpLayout
+from tools.dumpdata import DumpData, DumpLayout, V2Dump
 
 
 def make_position_bytes(count: int, seed: int) -> bytes:
@@ -33,6 +36,71 @@ def make_blend_bytes(count: int, indices_fn) -> bytes:
         for index in indices_fn(vertex):
             out += index.to_bytes(4, "little")
     return bytes(out)
+
+
+def make_xyz_position_bytes(points) -> bytes:
+    """Stride-40 position records from (x, y, z) float triples, 28 pad bytes each."""
+    out = bytearray()
+    for x, y, z in points:
+        out += struct.pack("<3f", x, y, z)
+        out += b"\x00" * 28
+    return bytes(out)
+
+
+def make_weighted_blend_bytes(records) -> bytes:
+    """Stride-32 blend records from (weights, indices) pairs per vertex."""
+    out = bytearray()
+    for weights, indices in records:
+        out += struct.pack("<4f", *weights)
+        out += struct.pack("<4I", *indices)
+    return bytes(out)
+
+
+def make_v2_dump(
+    root: Path, char: str, comp: str, name: str, position_vb: str, vertices
+) -> V2Dump:
+    """V2Dump over a written ``<name>-vb0=<position_vb>.txt`` vb0 text dump.
+
+    Each vertex is ``((x, y, z), weights, indices)``; a vertex given as just
+    ``((x, y, z),)`` ships a position line without blend lines.
+    """
+    folder = root / "v2" / f"{char}-{comp}"
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "stride: 44",
+        "first vertex: 0",
+        f"vertex count: {len(vertices)}",
+        "topology: trianglelist",
+        "",
+        "vertex-data:",
+    ]
+    for i, vertex in enumerate(vertices):
+        x, y, z = vertex[0]
+        lines.append(f"vb0[{i}]+0 POSITION0: {x}, {y}, {z}")
+        if len(vertex) == 1:
+            continue
+        weights, indices = vertex[1], vertex[2]
+        lines.append(
+            f"vb0[{i}]+12 BLENDWEIGHTS0: "
+            + ", ".join(str(weight) for weight in weights)
+        )
+        lines.append(
+            f"vb0[{i}]+16 BLENDINDICES0: " + ", ".join(str(bone) for bone in indices)
+        )
+    path = folder / f"{name}-vb0={position_vb.lower()}.txt"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return V2Dump(
+        char_latin=char,
+        comp=comp,
+        position_vb=position_vb.lower(),
+        blend_vb="",
+        texcoord_vb="",
+        ib="",
+        texcoord_format=None,
+        texcoord_stride=0,
+        vertex_count=len(vertices),
+        vb0_path=path,
+    )
 
 
 def test_exact_derivation_recovers_shifted_mapping():
@@ -228,6 +296,195 @@ def test_zero_vertices_refuse():
     assert derived == {} and report.map == {}
     assert report.total == 0
     assert report.refusal
+
+
+# ---------------------------------------------------------------------------
+# Grid derivation: tolerant radius pairing over a component's v2 mesh dump
+# ---------------------------------------------------------------------------
+
+
+def fixture_grid_dump(root: Path) -> V2Dump:
+    """V2 mesh dump for the fixture component: bone 7 at (0, 0, 0), bone 9 at (1, 0, 0)."""
+    return make_v2_dump(
+        root,
+        "dialyn",
+        "body",
+        "DialynBodyA",
+        "aaaaaa01",
+        [
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0)),
+            ((1.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (9, 0, 0, 0)),
+        ],
+    )
+
+
+def subdivided_mod_blend() -> bytes:
+    """Four stride-32 records: two for p1 (bone 7), two for p2 (old bone 5)."""
+    return make_weighted_blend_bytes(
+        [((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))] * 2
+        + [((1.0, 0.0, 0.0, 0.0), (5, 0, 0, 0))] * 2
+    )
+
+
+def subdivided_mod_position() -> bytes:
+    """Four stride-40 xyz records: two near (0, 0, 0), two near (1, 0, 0)."""
+    return make_xyz_position_bytes(
+        [(0.001, 0.0, 0.0), (0.0, 0.001, 0.0), (1.001, 0.0, 0.0), (1.0, 0.001, 0.0)]
+    )
+
+
+def test_grid_derivation_pairs_subdivided_mod_vertices(tmp_path):
+    dump = fixture_grid_dump(tmp_path)
+    mod_position = subdivided_mod_position()
+    mod_blend = subdivided_mod_blend()
+
+    derived, report = derive_grid_vote_map(mod_position, mod_blend, dump)
+
+    assert report.ok
+    assert report.refusal == ""
+    assert report.total == report.matched == 4
+    assert report.unmatched == 0
+    assert report.conflicts == {}
+    assert derived == {5: 9}
+    assert report.map == {5: 9}
+
+
+def test_grid_derivation_identity_pairs_yield_ok_empty_map(tmp_path):
+    dump = fixture_grid_dump(tmp_path)
+    mod_position = subdivided_mod_position()
+    mod_blend = make_weighted_blend_bytes(
+        [((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))] * 2
+        + [((1.0, 0.0, 0.0, 0.0), (9, 0, 0, 0))] * 2
+    )
+
+    derived, report = derive_grid_vote_map(mod_position, mod_blend, dump)
+
+    assert report.ok
+    assert report.refusal == ""
+    assert derived == {} and report.map == {}
+    assert report.total == report.matched == 4
+    assert report.conflicts == {}
+
+
+def test_grid_greedy_resolution_keeps_the_higher_vote_count(tmp_path):
+    dump = make_v2_dump(
+        tmp_path,
+        "dialyn",
+        "body",
+        "DialynBodyB",
+        "bbbbbb02",
+        [
+            ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (9, 0, 0, 0)),
+            ((1.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (11, 0, 0, 0)),
+        ],
+    )
+    mod_position = make_xyz_position_bytes(
+        [
+            (0.001, 0.0, 0.0),
+            (0.0, 0.001, 0.0),
+            (0.0, 0.0, 0.001),
+            (1.001, 0.0, 0.0),
+            (1.0, 0.0, 0.001),
+        ]
+    )
+    mod_blend = make_weighted_blend_bytes([((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))] * 5)
+
+    derived, report = derive_grid_vote_map(mod_position, mod_blend, dump)
+
+    assert report.ok
+    assert report.refusal == ""
+    assert derived == {7: 9}
+    assert report.total == report.matched == 5
+
+
+def test_grid_derivation_refuses_low_match_ratio(tmp_path):
+    dump = fixture_grid_dump(tmp_path)
+    points = [(0.001, 0.0, 0.0), (1.001, 0.0, 0.0)]
+    points += [(10.0 + 0.1 * v, 0.0, 0.0) for v in range(98)]
+    mod_position = make_xyz_position_bytes(points)
+    mod_blend = make_weighted_blend_bytes([((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))] * 100)
+
+    derived, report = derive_grid_vote_map(mod_position, mod_blend, dump)
+
+    assert not report.ok
+    assert derived == {} and report.map == {}
+    assert report.total == 100
+    assert report.matched == 2
+    assert report.unmatched == 98
+    assert "not the same mesh" in report.refusal
+
+
+def test_grid_derivation_refuses_without_any_pair_in_radius(tmp_path):
+    dump = fixture_grid_dump(tmp_path)
+    mod_position = make_xyz_position_bytes([(10.0 + 0.1 * v, 0.0, 0.0) for v in range(4)])
+    mod_blend = make_weighted_blend_bytes([((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))] * 4)
+
+    derived, report = derive_grid_vote_map(mod_position, mod_blend, dump)
+
+    assert not report.ok
+    assert derived == {} and report.map == {}
+    assert report.total == 4
+    assert report.matched == 0
+    assert "nothing within the grid radius" in report.refusal
+
+
+def test_grid_derivation_refuses_misaligned_or_mismatched_mod_buffers(tmp_path):
+    dump = fixture_grid_dump(tmp_path)
+    blend = make_weighted_blend_bytes([((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))])
+    position = make_xyz_position_bytes([(0.0, 0.0, 0.0)])
+
+    derived, report = derive_grid_vote_map(position, blend[:-1], dump)
+    assert not report.ok
+    assert derived == {} and report.map == {}
+    assert report.total == 0
+    assert "not a multiple of 32" in report.refusal
+
+    derived, report = derive_grid_vote_map(
+        make_xyz_position_bytes([(0.0, 0.0, 0.0), (1.0, 0.0, 0.0)]), blend, dump
+    )
+    assert not report.ok
+    assert derived == {} and report.map == {}
+    assert "mod blend has 1 vertices but mod position has 2" in report.refusal
+
+
+def test_grid_derivation_refuses_a_dump_without_blend_data(tmp_path):
+    blend = make_weighted_blend_bytes([((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))])
+    position = make_xyz_position_bytes([(0.0, 0.0, 0.0)])
+
+    empty = make_v2_dump(tmp_path, "dialyn", "body", "DialynBodyA", "aaaaaa01", [])
+    derived, report = derive_grid_vote_map(position, blend, empty)
+    assert not report.ok
+    assert derived == {} and report.map == {}
+    assert (
+        "the v2 dump lacks blend data (0 positions, 0 blend records)"
+        in report.refusal
+    )
+
+    partial = make_v2_dump(
+        tmp_path,
+        "dialyn",
+        "body",
+        "DialynBodyB",
+        "bbbbbb02",
+        [((0.0, 0.0, 0.0), (1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0)), ((1.0, 0.0, 0.0),)],
+    )
+    derived, report = derive_grid_vote_map(position, blend, partial)
+    assert not report.ok
+    assert derived == {} and report.map == {}
+    assert (
+        "the v2 dump lacks blend data (2 positions, 1 blend records)" in report.refusal
+    )
+
+
+def test_grid_derivation_refuses_zero_mod_vertices(tmp_path):
+    dump = fixture_grid_dump(tmp_path)
+
+    derived, report = derive_grid_vote_map(b"", b"", dump)
+
+    assert not report.ok
+    assert derived == {} and report.map == {}
+    assert report.total == 0
+    assert report.refusal == "no vertices to vote on"
 
 
 # ---------------------------------------------------------------------------
@@ -446,6 +703,37 @@ def test_scan_dedupes_two_inis_binding_the_same_blend_buffer(tmp_path):
     assert len({t.blend_path for t in targets}) == 1
 
 
+def test_scan_attaches_grid_dump_when_counts_differ(tmp_path):
+    dump = fixture_grid_dump(tmp_path / "dump")
+    _mod, _store = write_mod(tmp_path, blend=subdivided_mod_blend())
+    dumps = body_dumps(tmp_path / "dump")
+    dumps.v2[("dialyn", "body")] = [dump]
+
+    targets = scan_blend_vote_targets(tmp_path / "mods", dumps, _EMPTY_TABLES)
+
+    assert [(t.hash, t.source) for t in targets] == [("ff36809b", "dialyn/body")]
+    assert targets[0].grid is dump
+
+
+def test_scan_skips_count_mismatch_without_a_v2_dump(tmp_path):
+    _mod, _store = write_mod(tmp_path, blend=subdivided_mod_blend())
+    dumps = body_dumps(tmp_path / "dump")
+
+    assert scan_blend_vote_targets(tmp_path / "mods", dumps, _EMPTY_TABLES) == []
+
+
+def test_scan_attaches_grid_to_counts_equal_targets(tmp_path):
+    dump = fixture_grid_dump(tmp_path / "dump")
+    _mod, _store = write_mod(tmp_path)
+    dumps = body_dumps(tmp_path / "dump")
+    dumps.v2[("dialyn", "body")] = [dump]
+
+    targets = scan_blend_vote_targets(tmp_path / "mods", dumps, _EMPTY_TABLES)
+
+    assert [(t.hash, t.source) for t in targets] == [("ff36809b", "dialyn/body")]
+    assert targets[0].grid is dump
+
+
 def test_apply_vote_remap_rewrites_backs_up_and_marks(tmp_path):
     target, mods, store, mod = vote_fixtures(tmp_path)
     original = (mod / "blend.buf").read_bytes()
@@ -559,3 +847,75 @@ def test_apply_vote_remap_unreadable_blend_path(tmp_path):
     assert len(logs) == 1
     assert "blend vote skipped" in logs[0]
     assert not blend_state_path(tmp_path / "store", tmp_path / "mods").exists()
+
+
+def test_apply_grid_fallback_remaps_marks_and_backs_up(tmp_path):
+    dump = fixture_grid_dump(tmp_path / "dump")
+    mod, store = write_mod(tmp_path, blend=subdivided_mod_blend())
+    (mod / "position.buf").write_bytes(subdivided_mod_position())
+    mods = tmp_path / "mods"
+    dumps = body_dumps(tmp_path / "dump")
+    dumps.v2[("dialyn", "body")] = [dump]
+    (target,) = scan_blend_vote_targets(mods, dumps, _EMPTY_TABLES)
+    original = (mod / "blend.buf").read_bytes()
+    remapped = make_weighted_blend_bytes(
+        [((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))] * 2
+        + [((1.0, 0.0, 0.0, 0.0), (9, 0, 0, 0))] * 2
+    )
+    logs: list[str] = []
+
+    assert apply_blend_vote_remap(target, store, mods, log=logs.append) is True
+
+    assert (mod / "blend.buf").read_bytes() == remapped
+    (backup,) = sorted(store.rglob("*.bak"))
+    assert backup.read_bytes() == original
+    assert len(logs) == 1
+    assert logs[0].startswith(
+        "remapped blend indices (grid vote): blend.buf — 2 index values changed, "
+        "1 mappings derived from dialyn/body (match 4/4)"
+    )
+    assert "(few mappings — manual review recommended)" in logs[0]
+    assert logs[0].endswith(".bak)")
+    marker = json.loads(blend_state_path(store, mods).read_text(encoding="utf-8"))
+    assert set(marker) == {"Mod/blend.buf"}
+    entry = marker["Mod/blend.buf"]
+    assert entry["action"] == "grid"
+    assert entry["source"] == "dialyn/body (grid)"
+    assert entry["hash"] == "ff36809b"
+    assert entry["before"] == hashlib.sha256(original).hexdigest()
+    assert entry["after"] == hashlib.sha256(remapped).hexdigest()
+    assert isinstance(entry["stamp"], int)
+
+    logs.clear()
+    assert apply_blend_vote_remap(target, store, mods, log=logs.append) is False
+
+    assert logs == []
+    assert (mod / "blend.buf").read_bytes() == remapped
+    assert len(sorted(store.rglob("*.bak"))) == 1
+
+
+def test_apply_grid_fallback_refusal_logs_and_writes_nothing(tmp_path):
+    dump = fixture_grid_dump(tmp_path / "dump")
+    mod, store = write_mod(
+        tmp_path, blend=make_weighted_blend_bytes([((1.0, 0.0, 0.0, 0.0), (7, 0, 0, 0))] * 4)
+    )
+    (mod / "position.buf").write_bytes(
+        make_xyz_position_bytes([(10.0 + 0.1 * v, 0.0, 0.0) for v in range(4)])
+    )
+    mods = tmp_path / "mods"
+    dumps = body_dumps(tmp_path / "dump")
+    dumps.v2[("dialyn", "body")] = [dump]
+    (target,) = scan_blend_vote_targets(mods, dumps, _EMPTY_TABLES)
+    untouched = (mod / "blend.buf").read_bytes()
+    logs: list[str] = []
+
+    assert apply_blend_vote_remap(target, store, mods, log=logs.append) is False
+
+    assert len(logs) == 1
+    assert logs[0].startswith(
+        "blend vote skipped (grid): blend.buf — nothing within the grid radius"
+    )
+    assert logs[0].endswith("(match 0/4)")
+    assert (mod / "blend.buf").read_bytes() == untouched
+    assert not blend_state_path(store, mods).exists()
+    assert list(store.rglob("*.bak")) == []

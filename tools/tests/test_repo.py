@@ -308,6 +308,41 @@ def test_extract_archive_prunes_subfolder(tmp_path):
     assert not any(member.suffix == ".exe" for member in destination.rglob("*"))
 
 
+def test_is_index_dump_member_matches_only_ib_txt_files():
+    assert repo._is_index_dump_member("珂蕾妲-身体/DialynFaceA-ib=9a9780a7.txt")
+    assert repo._is_index_dump_member("DialynFaceA-ib=9a9780a7.txt")
+    assert not repo._is_index_dump_member("珂蕾妲-身体/DialynFaceA-vb0=c44d2531.txt")
+    assert not repo._is_index_dump_member("珂蕾妲-身体/DialynFaceA.json")
+    assert not repo._is_index_dump_member("说明.txt")
+
+
+def test_extract_archive_exclude_skips_v2_index_dumps(tmp_path):
+    archive = _archive_bytes(
+        "ZZZ_Index_Vertex_Fix_Tool_v2-main",
+        {
+            "ZZZ_Index_Vertex_Fix_Tool_v2/Dump/珂蕾妲-身体/"
+            "DialynFaceA-ib=9a9780a7.txt": b"index",
+            "ZZZ_Index_Vertex_Fix_Tool_v2/Dump/珂蕾妲-身体/"
+            "DialynFaceA-vb0=c44d2531.txt": b"vertex",
+            "ZZZ_Index_Vertex_Fix_Tool_v2/Dump/珂蕾妲-身体/DialynFaceA.json": b"{}",
+        },
+    )
+    destination = tmp_path / "out"
+    repo._extract_archive(
+        archive,
+        destination,
+        subfolder=repo._V2_DUMP_SUBFOLDER,
+        exclude=repo._is_index_dump_member,
+    )
+    assert not (
+        destination / "珂蕾妲-身体" / "DialynFaceA-ib=9a9780a7.txt"
+    ).exists()
+    assert (
+        destination / "珂蕾妲-身体" / "DialynFaceA-vb0=c44d2531.txt"
+    ).read_bytes() == b"vertex"
+    assert (destination / "珂蕾妲-身体" / "DialynFaceA.json").read_bytes() == b"{}"
+
+
 def test_ensure_repo_fix_tool_extracts_only_dump_subfolder(tmp_path, monkeypatch):
     def fake_fetch(url, timeout=repo._TIMEOUT_SECONDS):
         assert "ZZZ-Model-Fix-Tool" in str(url)
@@ -331,6 +366,38 @@ def test_ensure_repo_fix_tool_extracts_only_dump_subfolder(tmp_path, monkeypatch
     assert not (target / "版本修复工具").exists()
     assert repo.repo_head(target) == "feedbeef"
     assert repo._read_marker(target).get("etag") == '"etag-dump"'
+    assert not list(tmp_path.glob("*-staging-*"))
+
+
+def test_ensure_repo_fix_tool_extracts_v2_dump_subfolder(tmp_path, monkeypatch):
+    def fake_fetch(url, timeout=repo._TIMEOUT_SECONDS):
+        assert "ZZZ-Model-Fix-Tool" in str(url)
+        assert "refs/heads/main" in str(url)
+        assert timeout == repo._TIMEOUT_SECONDS
+        return _archive_bytes(
+            "ZZZ-Model-Fix-Tool-main",
+            {
+                "版本修复工具/dump/扳机-脸/扳机-脸.json": b"{}",
+                "版本修复工具/zzz_fix.中文版.exe": b"exe",
+                "ZZZ_Index_Vertex_Fix_Tool_v2/Dump/珂蕾妲-身体/"
+                "DialynFaceA-vb0=c44d2531.txt": b"vertex",
+                "ZZZ_Index_Vertex_Fix_Tool_v2/Dump/珂蕾妲-身体/"
+                "DialynFaceA-ib=9a9780a7.txt": b"index",
+            },
+        ), '"etag-dump-v2"'
+
+    monkeypatch.setattr(repo, "_fetch_url", fake_fetch)
+    monkeypatch.setattr(repo, "_head_sha", lambda variant: "feedbeef")
+
+    target = tmp_path / "dump"
+    assert repo.ensure_repo("fix_tool", cache_dir=target) == target
+    assert (target / "扳机-脸" / "扳机-脸.json").read_bytes() == b"{}"
+    v2_dump = target / "v2" / "珂蕾妲-身体" / "DialynFaceA-vb0=c44d2531.txt"
+    assert v2_dump.read_bytes() == b"vertex"
+    assert not (target / "v2" / "ZZZ_Index_Vertex_Fix_Tool_v2").exists()
+    assert not any("-ib=" in member.name for member in target.rglob("*"))
+    assert not (target / "版本修复工具").exists()
+    assert repo._read_marker(target).get("etag") == '"etag-dump-v2"'
     assert not list(tmp_path.glob("*-staging-*"))
 
 

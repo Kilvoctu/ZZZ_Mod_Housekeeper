@@ -8,20 +8,24 @@ from pathlib import Path
 import pytest
 
 from tools.characters import CharacterDB
-from tools.dumpdata import DumpData, DumpLayout
+from tools.dumpdata import DumpData, DumpLayout, V2Dump
 from tools.fixer import FixerData
 from tools.texcoord_upgrade import (
     TexcoordTarget,
+    _fmt_stride,
     apply_upgrade,
     buffer_gate,
+    convert_bytes,
     dump_face_texcoord_hashes,
     dump_match_for_hash,
     find_targets,
+    infer_old_formats,
     marker_kind,
     prune_texcoord_markers,
     remove_texcoord_state_keys,
     rewrite_texcoord_state_keys,
     scan_texcoord_targets,
+    scan_v2_texcoord_targets,
     texcoord_state_path,
     upgrade_bytes,
 )
@@ -509,3 +513,249 @@ def test_apply_upgrade_old_marker_without_action_still_suppresses(tmp_path):
     assert (mod / "face.buf").read_bytes() == converted
     assert "stride = 48" in (mod / "m.ini").read_text(encoding="utf-8")
     assert "action" not in _marker(store, tmp_path / "mods")
+
+
+def test_fmt_stride_token_widths_and_malformed_tokens():
+    assert _fmt_stride(("4B",)) == 4
+    assert _fmt_stride(("4f",)) == 16
+    assert _fmt_stride(("2e",)) == 4
+    assert _fmt_stride(("4B", "2f", "2f", "2f", "2f")) == 36
+    assert _fmt_stride(("4f", "2f", "2f", "2f", "2f")) == 48
+    for token in ("4x", "f", "0B", "B4"):
+        with pytest.raises(ValueError):
+            _fmt_stride((token,))
+
+
+def test_convert_bytes_matches_legacy_upgrade_golden():
+    data = _two_record_buffer()
+    assert (
+        convert_bytes(
+            data, ("4B", "2f", "2f", "2f", "2f"), ("4f", "2f", "2f", "2f", "2f")
+        )
+        == upgrade_bytes(data)
+    )
+
+
+def test_convert_bytes_4b_2f_to_4f_2f_exact_bytes():
+    old = (
+        struct.pack("<4B", 0, 128, 255, 16)
+        + struct.pack("<2f", 1.0, -2.0)
+        + struct.pack("<4B", 200, 1, 64, 0)
+        + struct.pack("<2f", 0.5, 3.25)
+    )
+    expected = (
+        struct.pack("<4f", 0.0, 128 / 255.0, 1.0, 16 / 255.0)
+        + struct.pack("<2f", 1.0, -2.0)
+        + struct.pack("<4f", 200 / 255.0, 1 / 255.0, 64 / 255.0, 0.0)
+        + struct.pack("<2f", 0.5, 3.25)
+    )
+    assert convert_bytes(old, ("4B", "2f"), ("4f", "2f")) == expected
+
+
+def test_convert_bytes_4b_2f_2f_to_4f_2f_2f_exact_bytes():
+    old = (
+        struct.pack("<4B", 0, 64, 200, 255)
+        + struct.pack("<2f", 0.5, -1.0)
+        + struct.pack("<2f", 2.0, -0.25)
+    )
+    expected = (
+        struct.pack("<4f", 0.0, 64 / 255.0, 200 / 255.0, 1.0)
+        + struct.pack("<2f", 0.5, -1.0)
+        + struct.pack("<2f", 2.0, -0.25)
+    )
+    assert len(old) == 20
+    assert convert_bytes(old, ("4B", "2f", "2f"), ("4f", "2f", "2f")) == expected
+
+
+def test_convert_bytes_rejects_mismatched_and_unsupported_changes():
+    with pytest.raises(ValueError):
+        convert_bytes(b"\x00" * 12, ("4B", "2f"), ("4f",))
+    with pytest.raises(ValueError):
+        convert_bytes(b"\x00" * 16, ("2f", "2f"), ("4e", "2f"))
+    with pytest.raises(ValueError):
+        convert_bytes(b"\x00" * 12, ("4B", "2f"), ("2f", "2f"))
+    with pytest.raises(ValueError) as excinfo:
+        convert_bytes(b"\x00" * 13, ("4B", "2f"), ("4f", "2f"))
+    assert "not 12-byte aligned" in str(excinfo.value)
+
+
+def test_convert_bytes_round_trips_4f_4b_4f_with_clamping():
+    data = (
+        struct.pack("<4f", 0.0, 64 / 255.0, 128 / 255.0, 1.0)
+        + struct.pack("<2f", 1.0, -2.0)
+        + struct.pack("<4f", 200 / 255.0, 1.0, 300 / 255.0, -0.5)
+        + struct.pack("<2f", 0.5, 3.25)
+    )
+    packed = convert_bytes(data, ("4f", "2f"), ("4B", "2f"))
+    assert packed == (
+        struct.pack("<4B", 0, 64, 128, 255)
+        + struct.pack("<2f", 1.0, -2.0)
+        + struct.pack("<4B", 200, 255, 255, 0)
+        + struct.pack("<2f", 0.5, 3.25)
+    )
+    assert convert_bytes(packed, ("4B", "2f"), ("4f", "2f")) == (
+        struct.pack("<4f", 0.0, 64 / 255.0, 128 / 255.0, 1.0)
+        + struct.pack("<2f", 1.0, -2.0)
+        + struct.pack("<4f", 200 / 255.0, 1.0, 1.0, 0.0)
+        + struct.pack("<2f", 0.5, 3.25)
+    )
+
+
+def test_convert_bytes_round_trips_4b_4e_4b():
+    data = struct.pack("<4B", 0, 16, 128, 255) + struct.pack("<2f", 0.5, -1.5)
+    halves = convert_bytes(data, ("4B", "2f"), ("4e", "2f"))
+    assert halves == (
+        struct.pack("<4e", 0.0, 16 / 255.0, 128 / 255.0, 1.0)
+        + struct.pack("<2f", 0.5, -1.5)
+    )
+    assert convert_bytes(halves, ("4e", "2f"), ("4B", "2f")) == data
+
+
+def test_infer_old_formats_shrinks_4f_blocks_in_order():
+    legacy = ("4f", "2f", "2f", "2f", "2f")
+    assert infer_old_formats(legacy, 36) == [("4B", "2f", "2f", "2f", "2f")]
+    assert infer_old_formats(legacy, 40) == [("4e", "2f", "2f", "2f", "2f")]
+    assert infer_old_formats(legacy, 37) == []
+    assert infer_old_formats(("4f", "4f"), 20) == [("4B", "4f"), ("4f", "4B")]
+    assert infer_old_formats(("4f", "4f"), 24) == [("4e", "4f"), ("4f", "4e")]
+
+
+def _v2_buffer() -> tuple[bytes, bytes]:
+    """Three 20-byte ("4B","2f","2f") records plus their hand-computed 32-byte form."""
+    old = b""
+    new = b""
+    for packed, first, second in (
+        ((0, 128, 255, 1), (0.5, -1.0), (2.0, -0.25)),
+        ((200, 2, 64, 3), (1.5, -2.0), (3.0, -0.5)),
+        ((16, 32, 48, 255), (2.5, -3.0), (4.0, -0.75)),
+    ):
+        old += struct.pack("<4B", *packed)
+        old += struct.pack("<2f", *first)
+        old += struct.pack("<2f", *second)
+        new += struct.pack("<4f", *(byte / 255.0 for byte in packed))
+        new += struct.pack("<2f", *first)
+        new += struct.pack("<2f", *second)
+    return old, new
+
+
+def _v2_dumps() -> DumpData:
+    """V2 dump for one face component whose texcoord vb hash matches the gate set."""
+    data = DumpData()
+    data.v2[("chara", "脸")] = [
+        V2Dump(
+            char_latin="chara",
+            comp="脸",
+            position_vb="",
+            blend_vb="",
+            texcoord_vb="aaaa0001",
+            ib="",
+            texcoord_format=("4f", "2f", "2f"),
+            texcoord_stride=32,
+            vertex_count=3,
+            vb0_path=None,
+        )
+    ]
+    return data
+
+
+def _write_v2_mod(tmp_path: Path) -> tuple[Path, Path, bytes]:
+    mod = tmp_path / "mods" / "DISABLED_Mod"
+    mod.mkdir(parents=True)
+    ini = (
+        "[TextureOverrideCharFaceTexcoord]\r\n"
+        "hash = aaaa0001\r\n"
+        "vb0 = ResourceCharFaceTexcoord\r\n"
+        "\r\n"
+        "[ResourceCharFaceTexcoord]\r\n"
+        "type = Buffer\r\n"
+        "stride = 20\r\n"
+        "filename = face.buf\r\n"
+    )
+    (mod / "m.ini").write_text(ini, encoding="utf-8", newline="")
+    original, _expected = _v2_buffer()
+    (mod / "face.buf").write_bytes(original)
+    return mod, tmp_path / "store", original
+
+
+def test_scan_v2_texcoord_targets_binds_dump_layout(tmp_path):
+    mod, _store, _original = _write_v2_mod(tmp_path)
+    targets = scan_v2_texcoord_targets(tmp_path / "mods", _v2_dumps(), FACE_HASHES)
+    assert len(targets) == 1
+    target = targets[0]
+    assert target.hash == "aaaa0001"
+    assert target.resource == "CharFaceTexcoord"
+    assert target.path == mod / "face.buf"
+    assert target.ini_path == mod / "m.ini"
+    assert target.old_stride == 20
+    assert target.new_stride == 32
+    assert target.fmt_old == ("4B", "2f", "2f")
+    assert target.fmt_new == ("4f", "2f", "2f")
+    assert target.source == "chara/脸"
+
+
+def test_apply_upgrade_converts_v2_target_rewrites_stride_and_marks(tmp_path):
+    mod, store, _original = _write_v2_mod(tmp_path)
+    _expected_old, expected = _v2_buffer()
+    targets = scan_v2_texcoord_targets(tmp_path / "mods", _v2_dumps(), FACE_HASHES)
+    logs: list[str] = []
+    assert apply_upgrade(targets[0], store, tmp_path / "mods", log=logs.append) is True
+    assert (mod / "face.buf").read_bytes() == expected
+    ini_text = (mod / "m.ini").read_text(encoding="utf-8")
+    assert "stride = 32" in ini_text and "stride = 20" not in ini_text
+    marker = _marker(store, tmp_path / "mods")
+    assert marker["action"] == "convert"
+    assert marker["source"] == "chara/脸"
+    assert any("converted texcoord format" in line for line in logs)
+    assert any("stride 20 -> 32" in line for line in logs)
+    logs.clear()
+    assert apply_upgrade(targets[0], store, tmp_path / "mods", log=logs.append) is False
+    assert not logs
+
+
+def test_scan_v2_texcoord_targets_skips_unusable_buffers(tmp_path):
+    dumps = _v2_dumps()
+    mod = tmp_path / "mods" / "DISABLED_Mod"
+    mod.mkdir(parents=True)
+    (mod / "m.ini").write_text(
+        "[TextureOverrideCharFaceTexcoord]\r\n"
+        "hash = aaaa0001\r\n"
+        "vb0 = ResourceCharFaceTexcoord\r\n"
+        "\r\n"
+        "[ResourceCharFaceTexcoord]\r\n"
+        "type = Buffer\r\n"
+        "stride = 20\r\n"
+        "filename = face.buf\r\n",
+        encoding="utf-8",
+        newline="",
+    )
+    assert scan_v2_texcoord_targets(tmp_path / "mods", dumps, FACE_HASHES) == []
+    (mod / "face.buf").write_bytes(b"\x00" * 96)
+    assert scan_v2_texcoord_targets(tmp_path / "mods", dumps, FACE_HASHES) == []
+    (mod / "face.buf").write_bytes(b"\x00" * 108)
+    assert scan_v2_texcoord_targets(tmp_path / "mods", dumps, FACE_HASHES) == []
+    (mod / "face.buf").write_bytes(b"\x00" * 61)
+    assert scan_v2_texcoord_targets(tmp_path / "mods", dumps, FACE_HASHES) == []
+
+
+def test_apply_upgrade_v2_missing_and_misaligned_buffers_only_log(tmp_path):
+    mod, store, _original = _write_v2_mod(tmp_path)
+    target = TexcoordTarget(
+        hash="aaaa0001",
+        resource="CharFaceTexcoord",
+        path=mod / "face.buf",
+        ini_path=mod / "m.ini",
+        old_stride=20,
+        new_stride=32,
+        fmt_old=("4B", "2f", "2f"),
+        fmt_new=("4f", "2f", "2f"),
+        source="chara/脸",
+    )
+    (mod / "face.buf").unlink()
+    logs: list[str] = []
+    assert apply_upgrade(target, store, tmp_path / "mods", log=logs.append) is False
+    assert any("missing" in line for line in logs)
+    (mod / "face.buf").write_bytes(b"\x00" * 61)
+    logs.clear()
+    assert apply_upgrade(target, store, tmp_path / "mods", log=logs.append) is False
+    assert any("20-byte aligned" in line for line in logs)
+    assert (mod / "face.buf").read_bytes() == b"\x00" * 61
