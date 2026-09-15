@@ -5,6 +5,7 @@ Headless-safe: importing the module pulls in PySide6 but creates no widgets
 and needs no QApplication; image file contents are never parsed.
 """
 
+import random
 from pathlib import Path
 
 # noinspection PyPackageRequirements
@@ -210,3 +211,154 @@ def test_save_jpeg_keeps_opaque_image_size(tmp_path):
     reloaded = QImage(str(destination))
     assert not reloaded.isNull()
     assert reloaded.size() == image.size()
+
+
+def test_next_ordered_destination_fresh_folder_starts_at_01(tmp_path):
+    """An empty folder starts the ordered series at preview-01."""
+    folder = tmp_path / "dest"
+    folder.mkdir()
+
+    assert (
+        main_window._next_ordered_destination(folder, "preview", ".jpg")
+        == folder / "preview-01.jpg"
+    )
+
+
+def test_next_ordered_destination_increments_from_highest_slot(tmp_path):
+    """The next slot follows the highest existing number, one at a time."""
+    folder = tmp_path / "dest"
+    add_image(folder, "preview-01.jpg")
+    add_image(folder, "preview-02.jpg")
+    add_image(folder, "preview-03.jpg")
+
+    assert (
+        main_window._next_ordered_destination(folder, "preview", ".jpg")
+        == folder / "preview-04.jpg"
+    )
+
+    add_image(folder, "preview-10.jpg")
+    assert (
+        main_window._next_ordered_destination(folder, "preview", ".jpg")
+        == folder / "preview-11.jpg"
+    )
+
+
+def test_next_ordered_destination_never_reuses_deleted_slots(tmp_path):
+    """Numbering is monotonic from the maximum; gaps are not backfilled."""
+    folder = tmp_path / "dest"
+    add_image(folder, "preview-01.jpg")
+    add_image(folder, "preview-03.jpg")
+
+    assert (
+        main_window._next_ordered_destination(folder, "preview", ".jpg")
+        == folder / "preview-04.jpg"
+    )
+
+
+def test_next_ordered_destination_auto_widens_past_nine(tmp_path):
+    """Two-digit padding holds through 99, then widens to three digits."""
+    folder = tmp_path / "dest"
+    add_image(folder, "preview-09.jpg")
+    add_image(folder, "preview-10.jpg")
+
+    assert (
+        main_window._next_ordered_destination(folder, "preview", ".jpg")
+        == folder / "preview-11.jpg"
+    )
+
+    add_image(folder, "preview-99.jpg")
+    assert (
+        main_window._next_ordered_destination(folder, "preview", ".jpg")
+        == folder / "preview-100.jpg"
+    )
+
+
+def test_next_ordered_destination_ignores_legacy_and_other_names(tmp_path):
+    """Legacy 'preview.jpg'/'preview (2).jpg' and unrelated names are not
+    slots; the ordered series still starts at 01."""
+    folder = tmp_path / "dest"
+    add_image(folder, "preview.jpg")
+    add_image(folder, "preview (2).jpg")
+    add_image(folder, "cover.png")
+
+    assert (
+        main_window._next_ordered_destination(folder, "preview", ".jpg")
+        == folder / "preview-01.jpg"
+    )
+
+
+def test_existing_images_filters_missing(tmp_path):
+    """Only candidates that still exist on disk survive."""
+    existing = add_image(tmp_path, "keep.png")
+    missing = tmp_path / "gone.png"
+
+    assert main_window._existing_images([existing, missing]) == [existing]
+
+
+def test_category_preview_order_single_group_deterministic(tmp_path):
+    """One sub-mod keeps its stable order; the rng never shuffles it."""
+    mod = tmp_path / "mod"
+    first = add_image(mod / "sub", "a.png")
+    second = add_image(mod / "sub", "b.png")
+
+    for rng in (random.Random(0), random.Random(99)):
+        assert main_window._category_preview_order(mod, [first, second], rng) == [
+            first,
+            second,
+        ]
+
+
+def test_category_preview_order_starts_at_random_group(tmp_path):
+    """The rotation starts at a uniformly random sub-mod; every candidate is
+    kept and each sub-mod's candidates stay contiguous."""
+    mod = tmp_path / "mod"
+    a = add_image(mod / "sub1", "a.png")
+    b = add_image(mod / "sub2", "b.png")
+    c = add_image(mod / "sub3", "c.png")
+
+    result = main_window._category_preview_order(mod, [a, b, c], random.Random(0))
+
+    assert result[0] in (a, b, c)
+    assert sorted(result) == sorted((a, b, c))
+    groups = [path.relative_to(mod).parts[0] for path in result]
+    for key in set(groups):
+        positions = [index for index, group in enumerate(groups) if group == key]
+        assert positions == list(range(positions[0], positions[0] + len(positions)))
+
+
+def test_category_preview_order_deterministic_for_same_seed(tmp_path):
+    """The same seed yields the same rotation; a differing seed can start at
+    a different sub-mod."""
+    mod = tmp_path / "mod"
+    a = add_image(mod / "sub1", "a.png")
+    b = add_image(mod / "sub2", "b.png")
+    c = add_image(mod / "sub3", "c.png")
+
+    first = main_window._category_preview_order(mod, [a, b, c], random.Random(7))
+    second = main_window._category_preview_order(mod, [a, b, c], random.Random(7))
+    assert first == second
+
+    other = main_window._category_preview_order(mod, [a, b, c], random.Random(8))
+    assert first[0] != other[0]
+
+
+def test_category_preview_order_empty(tmp_path):
+    """No candidates yield an empty order."""
+    mod = tmp_path / "mod"
+    mod.mkdir()
+
+    assert main_window._category_preview_order(mod, [], random.Random(0)) == []
+
+
+def test_category_preview_order_includes_disabled_submods(tmp_path):
+    """DISABLED_ sub-mods are ordinary groups and stay in the rotation."""
+    mod = tmp_path / "mod"
+    enabled = add_image(mod / "sub", "a.png")
+    disabled = add_image(mod / "DISABLED_foo", "b.png")
+
+    result = main_window._category_preview_order(
+        mod, [enabled, disabled], random.Random(0)
+    )
+
+    assert sorted(result) == sorted((enabled, disabled))
+    assert result[0] in (enabled, disabled)
