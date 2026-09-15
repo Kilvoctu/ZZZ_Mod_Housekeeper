@@ -75,6 +75,7 @@ from ..texcoord_upgrade import (
     remove_texcoord_state_keys,
     rewrite_texcoord_state_keys,
     scan_texcoord_targets,
+    scan_v2_texcoord_targets,
 )
 
 LogFn = Callable[[str], None]
@@ -197,6 +198,8 @@ def _attach_dump_data(datasets: dict[str, FixerData], log: LogFn) -> None:
         data.dumps = dumps
     if dumps.vertexlimit:
         log(f"Loaded {len(dumps.vertexlimit)} fix-tool dump component(s)")
+    if dumps.v2:
+        log(f"Loaded {len(dumps.v2)} v2 mesh dump(s)")
 
 
 def _fallback_dataset(log: LogFn) -> FixerData:
@@ -414,6 +417,16 @@ def fix_mod_worker(
                     target, default_backups_dir(), Path(mods_dir), log=log
                 )
             for target in scan_texcoord_targets(paths[0], buffer_gate(data)):
+                apply_upgrade(
+                    target,
+                    default_backups_dir(),
+                    Path(mods_dir),
+                    log=log,
+                    dumps=data.dumps,
+                )
+            for target in scan_v2_texcoord_targets(
+                paths[0], data.dumps, buffer_gate(data)
+            ):
                 apply_upgrade(
                     target,
                     default_backups_dir(),
