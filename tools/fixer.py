@@ -4,8 +4,10 @@ Resolves ``hash =`` lines through changelog chains, remaps index values through
 IB object-index changes, and preserves untouched lines and encoding byte-for-byte.
 """
 
+import os
 import re
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -1156,6 +1158,43 @@ def parse_ini_facts(text: str) -> tuple[dict[str, set[str]], list[_Section]]:
         for _line_no, hash_value in section.hashes:
             hints.setdefault(hash_value, set()).add(_section_hint(section.name))
     return hints, sections
+
+
+_INI_PARSE_MEMO_CAP = 4096
+_INI_PARSE_MEMO: OrderedDict[tuple[str, int, int], tuple[str, dict, list]] = OrderedDict()
+
+
+def cached_ini_parse(path: Path) -> tuple[str, dict, list] | None:
+    """(text, hints, sections) for a .ini file, memoized across analysis runs.
+
+    Keyed by (path, st_mtime_ns, st_size) in an LRU OrderedDict capped at
+    ``_INI_PARSE_MEMO_CAP``: hits move to the end and the oldest entry is
+    evicted past the cap. os.stat OSError (missing path) and read OSError
+    (a directory path stats fine but read fails) return None; undecodable
+    bytes raise ValueError — failures are never memoized. No locking: only
+    one TaskWorker runs at a time. scan_folder/scan_files/_scan_file_details
+    stay unwired on purpose: apply_plan writes back via the raw ``encoding``
+    only _scan_file_details decodes, and its ``write_bytes`` bumps the mtime
+    (a natural memo miss anyway).
+    """
+    try:
+        stat = Path(path).stat()
+    except OSError:
+        return None
+    key = (os.path.abspath(str(path)), stat.st_mtime_ns, stat.st_size)
+    cached = _INI_PARSE_MEMO.get(key)
+    if cached is not None:
+        _INI_PARSE_MEMO.move_to_end(key)
+        return cached
+    try:
+        text = read_ini_text(path)
+    except OSError:
+        return None
+    hints, sections = parse_ini_facts(text)
+    _INI_PARSE_MEMO[key] = (text, hints, sections)
+    while len(_INI_PARSE_MEMO) > _INI_PARSE_MEMO_CAP:
+        _INI_PARSE_MEMO.popitem(last=False)
+    return text, hints, sections
 
 
 def collect_texture_override_hashes(path: Path) -> list[str]:
