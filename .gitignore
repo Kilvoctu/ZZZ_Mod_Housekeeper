@@ -17,3 +17,4 @@ backups/
 *.lock
 *.bak
 state.json
+tools/tests/
