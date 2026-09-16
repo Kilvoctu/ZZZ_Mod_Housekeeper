@@ -29,8 +29,7 @@ def buffer_coupled_hashes_path() -> Path:
 def load_buffer_coupled_hashes() -> frozenset[str]:
     """The buffer-coupled from-hashes that must never be hash-renamed.
 
-    Reads data/buffer_coupled_hashes.json; a missing or malformed file
-    contributes nothing, and valid 8-hex items are lowercased.
+    Reads data/buffer_coupled_hashes.json; a missing or malformed file contributes nothing, and valid 8-hex items are lowercased.
     """
     try:
         data = json.loads(buffer_coupled_hashes_path().read_text(encoding="utf-8"))
@@ -48,8 +47,7 @@ def load_buffer_coupled_hashes() -> frozenset[str]:
 def _parse_index_array(value: object) -> list[int] | None:
     """Parse one bracket-array string like "[0,31275]" into a list of ints.
 
-    Returns None when the value is not a bracket-wrapped string of plain
-    non-negative ints; empty brackets "[]" parse as an empty list.
+    Returns None when the value is not a bracket-wrapped string of plain non-negative ints; empty brackets "[]" parse as an empty list.
     """
     if not isinstance(value, str):
         return None
@@ -70,8 +68,7 @@ def _parse_index_array(value: object) -> list[int] | None:
 def parse_player_character_data(path: Path) -> list[ChangeEntry]:
     """Parse PlayerCharacterData.json into ChangeEntry rows in file order.
 
-    Each valid row becomes one entry with role "pcdata" whose ordinal doubles
-    as the 1-based version_index; invalid rows are skipped and not sorted here.
+    Each valid row becomes one entry with role "pcdata" whose ordinal doubles as the 1-based version_index; invalid rows are skipped and not sorted here.
     """
     data = json.loads(Path(path).read_text(encoding="utf-8-sig"))
     rows: list[ChangeEntry] = []

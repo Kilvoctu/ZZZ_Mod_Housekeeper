@@ -1,23 +1,7 @@
 """Parse the ZZZ-Model-Fix-Tool dump data (版本修复工具/dump subfolder).
 
-Provenance: the dump repo (hefengchang/ZZZ-Model-Fix-Tool) ships one folder
-per component under 版本修复工具/dump, named ``<角色中文名>-<部件>`` possibly
-with extra dash-separated qualifiers (e.g. ``蕾米埃尔-黑皮-腿``).  Each folder
-holds one JSON description plus the referenced ``.buf`` binaries and the mesh
-``.ib``; face folders ship the JSON only.
-
-Stride rule: a buffer's byte stride is the sum of its ``D3D11ElementList``
-``ByteWidth`` values (all elements share one ``ExtractSlot``), e.g. a face
-Texcoord of 16 + 4×8 = 48 bytes.
-
-v2 schema: ``<cache>/v2/<MeshFolder>/`` groups one mesh reference — a
-``hash.json`` list (one entry per object mesh: component/object metadata
-plus position/blend/texcoord/ib hashes) beside ``<Name>-vb0=<position_vb>.txt``
-text vertex dumps (``-ib=*.txt`` files are ignored).  Entries dedupe by
-``position_vb`` (first wins) and skip when no vb0 txt carries that hash; the
-vb0 header's element blocks give the texcoord stream layout (COLOR first,
-then TEXCOORDs sorted by index) and the vertex count, while the vertex body
-(POSITION/BLENDWEIGHTS/BLENDINDICES) is parsed lazily via ``V2Dump.vertices``.
+Provenance: the dump repo (hefengchang/ZZZ-Model-Fix-Tool) ships one folder per component under 版本修复工具/dump, named ``<角色中文名>-<部件>`` possibly with extra dash qualifiers; each folder holds one JSON description plus its ``.buf`` binaries and the mesh ``.ib`` (face folders ship the JSON only), and a buffer's byte stride is the sum of its ``D3D11ElementList`` ``ByteWidth`` values (all elements share one ``ExtractSlot``).
+v2 schema: ``<cache>/v2/<MeshFolder>/`` pairs a ``hash.json`` entry list (deduped by ``position_vb``, first wins; skipped when no vb0 txt carries that hash) beside ``<Name>-vb0=<position_vb>.txt`` vertex dumps (``-ib=*.txt`` files ignored); the vb0 header gives the texcoord layout (COLOR first, then TEXCOORDs by index) and the vertex count, while the vertex body parses lazily via ``V2Dump.vertices``.
 """
 
 import json
@@ -76,12 +60,7 @@ class V2Dump:
     """One v2 mesh reference: a hash.json entry plus its vb0 dump.
 
     ``char_latin``/``comp`` come from the mesh folder name; the hash fields
-    are lowercased ('' when absent); ``texcoord_format`` holds the texcoord
-    stream's struct tokens (COLOR first, then TEXCOORDs sorted by index) or
-    None when the dump has no usable texcoord elements, with
-    ``texcoord_stride`` their total byte width; ``vertex_count`` is the vb0
-    header's declared count.  ``vertices`` lazily parses the vb0 body.
-    """
+    are lowercased ('' when absent); ``texcoord_format`` holds the texcoord tokens (COLOR first, then TEXCOORDs by index) or None without usable texcoord elements, ``texcoord_stride`` their byte width, ``vertex_count`` the header's declared count, and ``vertices`` lazily parses the vb0 body."""
 
     char_latin: str
     comp: str
@@ -108,11 +87,7 @@ class V2Dump:
 class DumpData:
     """Everything parsed from the fix-tool dump cache.
 
-    ``layouts``/``current_hashes``/``binaries`` key by (char_latin, comp, role)
-    with role the lowercased buffer Category; ``vertexlimit``/``ibs`` key by
-    (char_latin, comp).  ``binaries`` holds only shipped (existing) files.
-    ``v2`` holds the v2 mesh dumps keyed by (char_latin, comp).
-    """
+    ``layouts``/``current_hashes``/``binaries`` key by (char_latin, comp, role) with role the lowercased buffer Category, ``binaries`` holding only shipped (existing) files; ``vertexlimit``/``ibs`` and ``v2`` key by (char_latin, comp)."""
 
     layouts: dict[tuple[str, str, str], DumpLayout] = field(default_factory=dict)
     current_hashes: dict[tuple[str, str, str], str] = field(default_factory=dict)
@@ -125,14 +100,8 @@ class DumpData:
 def load_dump_data(cache_dir: Path, db: CharacterDB | None = None) -> DumpData:
     """Parse every component dump folder under the fix-tool cache root.
 
-    ``cache_dir`` is the extracted 版本修复工具/dump root.  Each immediate
-    subdirectory is one component dump; the folder name splits into
-    (character, component) via the longest dash-prefix startswith-matching a
-    table character name (whose latin name is recorded), falling back to the
-    first dash when no db is given or nothing matches.  Undecodable JSONs are
-    skipped silently; a missing or empty cache yields an empty DumpData.
-    Afterward the ``v2`` subfolder is scanned for the per-mesh v2 schema.
-    """
+    ``cache_dir`` is the extracted 版本修复工具/dump root; each immediate subfolder is one component dump, its name split into (character, component) via the longest dash-prefix startswith-matching a table character name, falling back to the first dash when no db is given or nothing matches.
+    Undecodable JSONs are skipped silently; a missing or empty cache yields an empty DumpData; afterward the ``v2`` subfolder is scanned for the per-mesh v2 schema."""
     data = DumpData()
     cache_dir = Path(cache_dir)
     if not cache_dir.is_dir():
@@ -158,9 +127,7 @@ def _split_folder(name: str, db: CharacterDB | None) -> tuple[str, str]:
     """Split one dump folder name into (char_latin, comp label).
 
     The character part is the longest dash-prefix that startswith-matches a
-    table character name (latin suffix recorded); without a db or a match the
-    first dash splits and the raw prefix is kept as-is.
-    """
+    table character name (latin suffix recorded); without a db or a match the first dash splits and the raw prefix is kept as-is."""
     if "-" not in name:
         return name, ""
     best: tuple[str, str] | None = None
@@ -234,9 +201,7 @@ def _parse_buffer_entry(
     """(role, layout, current hash) from one CategoryBufferList entry, or None.
 
     Role and ExtractSlot are read from the first D3D11ElementList element (all
-    elements share them); the stride sums the element ByteWidth values (ints
-    may arrive as strings); unparseable entries return None.
-    """
+    elements share them); the stride sums the element ByteWidth values (ints may arrive as strings); unparseable entries return None."""
     elements = entry.get("D3D11ElementList")
     if not isinstance(elements, list) or not elements:
         return None
@@ -338,8 +303,7 @@ def _parse_vb0_header(path: Path) -> tuple[list[tuple[str, int, str]], int]:
     """(element triples, declared vertex count) from one -vb0 txt header.
 
     Elements are the SemanticName/SemanticIndex/Format blocks before the
-    ``vertex-data:`` line; unreadable or malformed files give ([], 0).
-    """
+    ``vertex-data:`` line; unreadable or malformed files give ([], 0)."""
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -360,9 +324,7 @@ def _texcoord_layout(
     """Texcoord stream tokens: the COLOR element first, then TEXCOORDs sorted.
 
     Upstream rule: COLOR sits in front of the stream and the TEXCOORDs follow
-    ordered by SemanticIndex; unknown D3D formats or no COLOR/TEXCOORD at all
-    give None.
-    """
+    ordered by SemanticIndex; unknown D3D formats or no COLOR/TEXCOORD at all give None."""
     picked = [element for element in elements if element[0] == "COLOR"][:1]
     picked += sorted(
         (element for element in elements if element[0] == "TEXCOORD"),
@@ -385,9 +347,7 @@ def _parse_vb0_vertices(path: Path | None) -> _VB0Vertices:
     """(positions, blends) from one -vb0 body; failures yield empty lists.
 
     Each ``vb0[i]+<offset>`` body line fills vertex i: POSITION0 gives
-    (x, y, z), BLENDWEIGHTS0 four weights and BLENDINDICES0 four int
-    indices; a blend entry needs both lines (upstream rule).
-    """
+    (x, y, z), BLENDWEIGHTS0 four weights and BLENDINDICES0 four int indices; a blend entry needs both lines (upstream rule)."""
     if path is None:
         return [], []
     try:

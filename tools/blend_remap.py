@@ -347,10 +347,7 @@ def remove_blend_state_keys(store_dir: Path, mods_dir: Path, prefix: str) -> int
 def blend_marker_kind(store_dir: Path, mods_dir: Path, live_path: Path) -> str | None:
     """Fix-kind annotation for a live blend from its marker; None without one.
 
-    "blend remap (vote)" marks a buffer remapped from dump data by the vote
-    pass, "blend remap (table)" one remapped from the shipped tables; a legacy
-    marker without an "action" field predates the distinction and counts as a
-    table remap.
+    "blend remap (vote)" marks a buffer remapped from dump data by the vote pass, "blend remap (table)" one remapped from the shipped tables; a legacy marker without an "action" field predates the distinction and counts as a table remap.
     """
     marker = load_blend_state(store_dir, mods_dir).get(
         blend_state_key(mods_dir, live_path)
@@ -369,10 +366,7 @@ def prune_blend_markers(
 ) -> int:
     """Drop markers of blends a revert put back to pre-remap bytes; returns the count dropped.
 
-    A marker is dropped when its live .buf exists again with exactly the
-    content the marker's "before" hash recorded, i.e. nothing remapped remains
-    on disk; non-.buf paths are ignored and unreadable live files are skipped.
-    The state file is rewritten at most once, only when something was dropped.
+    A marker is dropped when its live .buf exists again with exactly the content the marker's "before" hash recorded, i.e. nothing remapped remains on disk; non-.buf paths are ignored, unreadable live files are skipped, and the state file is rewritten at most once, only when something was dropped.
     """
     state = load_blend_state(store_dir, mods_dir)
     if not state:

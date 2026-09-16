@@ -39,9 +39,7 @@ def default_backups_dir() -> Path:
 def folder_key(mods_dir: Path) -> str:
     """Stable per-mods-folder key: sanitized root name + 8-char digest.
 
-    Non-[A-Za-z0-9_-] chars become "_" (empty name -> "mods"); the digest
-    covers the mods path relative to the app root when it lives inside it,
-    and the absolute path otherwise.
+    Non-[A-Za-z0-9_-] chars become "_" (empty name -> "mods"); the digest covers the mods path relative to the app root when it lives inside it, and the absolute path otherwise.
     """
     return _digest_key(mods_dir, _key_input(mods_dir))
 
@@ -75,8 +73,7 @@ def store_root(store_dir: Path, mods_dir: Path) -> Path:
 def migrate_store_key(store_dir: Path, mods_dir: Path) -> None:
     """Adopt the pre-relocation (absolute-key) store when it exists.
 
-    Renames the legacy-key store folder to the current key when the
-    current-key folder is absent; no-op otherwise.
+    Renames the legacy-key store folder to the current key when the current-key folder is absent; no-op otherwise.
     """
     legacy = Path(store_dir) / _legacy_folder_key(mods_dir)
     current = Path(store_dir) / folder_key(mods_dir)
@@ -97,8 +94,7 @@ def store_folder_for_mod(store_dir: Path, mods_dir: Path, mod_path: Path) -> Pat
 def store_folder_to_open(store_dir: Path, mods_dir: Path, mod_path: Path) -> Path:
     """Folder to open for a mod's backups: the mod's store folder when it exists.
 
-    Falls back to the store root, then the store dir; when none of them exist
-    the mods folder is returned so the caller always opens something sensible.
+    Falls back to the store root, then the store dir; when none of them exist the mods folder is returned so the caller always opens something sensible.
     """
     store_dir = Path(store_dir)
     candidates = (
@@ -146,10 +142,7 @@ def delete_store_folder(store_dir: Path, mods_dir: Path, rel: Path) -> bool:
 def prune_empty_store_folders(store_dir: Path, mods_dir: Path) -> int:
     """Remove every empty directory under the mods folder's store root; returns the count.
 
-    Consumed backups leave their mirror directories behind; a bottom-up sweep
-    deleting only truly empty directories (deepest first, store root itself
-    never removed) cleans those leftovers without touching live backups,
-    sibling mods, or other mods folders.
+    Consumed backups leave their mirror directories behind; a bottom-up sweep deleting only truly empty directories (deepest first, store root itself never removed) cleans those leftovers without touching live backups, sibling mods, or other mods folders.
     """
     root = store_root(store_dir, Path(mods_dir))
     if not root.is_dir():

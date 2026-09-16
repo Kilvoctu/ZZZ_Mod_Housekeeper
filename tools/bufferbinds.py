@@ -1,10 +1,7 @@
 """Collect the vertex/index buffer binds a mod .ini declares for its hashes.
 
-A ``[TextureOverride…]`` section binds buffers via ``vb0``/``vb1``/``vb2``/
-``ib`` lines; the referenced ``[Resource<Name>]`` block carries the shipped
-binary's ``filename`` and, when declared, the vertex ``stride``. Binds whose
-Resource block is missing, is not a ``Buffer``, or matches nothing are not
-collectable and are skipped - diagnosis only covers binds a block declares.
+A ``[TextureOverride…]`` section binds buffers via ``vb0``/``vb1``/``vb2``/``ib`` lines; the referenced ``[Resource<Name>]`` block carries the shipped binary's ``filename`` and, when declared, the vertex ``stride``.
+Binds whose Resource block is missing, is not a ``Buffer``, or matches nothing are not collectable and are skipped - diagnosis only covers binds a block declares.
 """
 
 import os
@@ -124,11 +121,7 @@ def collect_buffer_binds(
 ) -> list[BufferBind]:
     """Buffer binds declared by this ini's TextureOverride hashes.
 
-    Each (hash, vbN/ib) bind pairs with every Resource block whose
-    variant-suffix-stripped name matches the bound resource; ``exists`` is
-    evaluated against the real filesystem at collection time, or via the
-    supplied lookup callable when one is passed (analyze reuses the walk's
-    file set to avoid a stat per bind).
+    Each (hash, vbN/ib) bind pairs with every Resource block whose variant-suffix-stripped name matches the bound resource; ``exists`` is evaluated against the real filesystem at collection time, or via the supplied lookup callable when one is passed (analyze reuses the walk's file set to avoid a stat per bind).
     """
     ini_dir = Path(ini_path).parent
     lines = _ini_lines(ini_text)

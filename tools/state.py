@@ -1,9 +1,7 @@
 """Consolidated app state: settings, presets and promoted previews in one JSON.
 
 state.json lives next to the exe: {"version": 1, "settings": {}, "presets": {},
-"promoted": {}}.  Loads are tolerant (a missing or unreadable file yields empty
-sections, never an exception); saves are atomic (temp file + os.replace).  The
-version field exists so future format changes can migrate in place.
+"promoted": {}}.  Loads are tolerant (a missing or unreadable file yields empty sections, never an exception), saves are atomic (temp file + os.replace), and the version field exists so future format changes can migrate in place.
 """
 
 import json
@@ -27,12 +25,8 @@ def state_path(root: Path | None = None) -> Path:
 def load_state(root: Path | None = None) -> dict[str, object]:
     """Read the consolidated state; a missing file yields the empty state.
 
-    A present state.json is read tolerantly: unreadable or malformed content
-    yields empty sections instead of an exception.  A missing state.json
-    returns the normalized empty state (version plus three empty sections)
-    without writing anything.  The raw text is memoized by (mtime, size) so
-    repeated loads skip the disk read; save_state invalidates the memo.
-    """
+    A present state.json is read tolerantly: unreadable or malformed content yields the normalized empty state (version plus three empty sections) instead of an exception, without writing anything.
+    The raw text is memoized by (mtime, size) so repeated loads skip the disk read; save_state invalidates the memo."""
     path = state_path(root)
     if not path.exists():
         return _normalize({})

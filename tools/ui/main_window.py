@@ -12,8 +12,9 @@ import random
 import re
 import shutil
 import sys
+import threading
 from collections import deque
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from datetime import datetime, timezone
 from functools import partial
 from pathlib import Path
@@ -38,6 +39,7 @@ from PySide6.QtCore import (
     Qt,
     QTimer,
     QUrl,
+    Signal,
 )
 
 # noinspection PyPackageRequirements
@@ -95,6 +97,7 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSpacerItem,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
@@ -158,6 +161,7 @@ from ..repo import DEFAULT_VARIANT, REPO_VARIANTS, default_cache_dir, project_ro
 from ..state import load_state, save_state
 from ..structure import StructureData
 from ..texcoord_upgrade import marker_kind
+from ..toggles import ToggleWarning, compute_mod_toggle_warnings
 from .worker import (
     _UPDATE_BUTTON,
     TaskWorker,
@@ -218,10 +222,8 @@ def _forget_worker(worker: TaskWorker) -> None:
 def updates_text(version: ModVersion, as_mod: bool) -> str:
     """Updates-column text for a node with a version: its strongest update signal.
 
-    buffers = missing or old-format shipped .buf/.ib; old hash = chain-fixable
-    stale hashes; sections = pending structural ini insertions;
-    a file with no known hashes shows nothing while a mod with none shows "unknown".
-    """
+    buffers = missing/old-format shipped .buf/.ib; old hash = stale chain-fixable
+    hashes; sections = structural ini inserts; no hashes: file "", mod "unknown"."""
     if version.broken_count > 0:
         return BROKEN_BUFFERS_SIGNAL
     if version.outdated_count > 0:
@@ -382,8 +384,7 @@ def update_button_state(
     """(enabled, label) for the data-update button from the upstream checks.
 
     Pending shows a disabled "Checking..."; any True enables "Update data", all
-    False grays it as "Data updated", and anything else grays it as "Update unavailable".
-    """
+    False grays it as "Data updated", anything else as "Update unavailable"."""
     if pending:
         return False, "Checking..."
     if any(status is True for status in statuses.values()):
@@ -404,10 +405,8 @@ def _has_hash_knowledge(datasets: Mapping[str, FixerData]) -> bool:
 def _scope_has_backups(mods_dir: Path, store_dir: Path, scope_path: Path) -> bool:
     """Whether the fix-backup store holds any backup for the given scope.
 
-    A single-file scope checks chains for exactly that file; a directory
-    scope checks that the scope's store mirror folder exists and holds at
-    least one file recursively (empty folders don't count).
-    """
+    A single-file scope checks chains for exactly that file; a directory scope
+    checks its store mirror holds a file recursively (empty folders don't count)."""
     if scope_path.is_file():
         return bool(collect_backup_chains_for([scope_path], mods_dir, store_dir))
     try:
@@ -426,8 +425,7 @@ def _restored_geometry(raw: object) -> QByteArray | None:
     """Decode a stored window geometry for restoreGeometry; None when unusable.
 
     State values are hex strings of saveGeometry() bytes; a raw QByteArray is
-    passed through untouched so callers keep their not-None restore guard.
-    """
+    passed through untouched so callers keep their not-None restore guard."""
     if isinstance(raw, QByteArray):
         return raw
     if isinstance(raw, str) and raw:
@@ -442,8 +440,7 @@ def _stored_size_pair(raw: object) -> list[int] | None:
     """Interpret a stored dialog size as [width, height]; None when unusable.
 
     State values are [width, height] lists; a legacy QSize or "@Size(w h)" text
-    (hand-edited state or a not-yet-migrated ini value) is accepted as well.
-    """
+    (hand-edited state or a not-yet-migrated ini value) is accepted as well."""
     if isinstance(raw, QSize):
         return [int(raw.width()), int(raw.height())]
     if isinstance(raw, str):
@@ -475,8 +472,7 @@ def _expanded_path_list(raw: object) -> list[str]:
     """Interpret a stored tree_expanded value as a list of mod paths.
 
     Tolerates a native list, a JSON-text string (the closeEvent write-out) and
-    a comma-separated fallback, mirroring what the legacy ini held.
-    """
+    a comma-separated fallback, mirroring what the legacy ini held."""
     if isinstance(raw, list):
         return [str(path) for path in raw if path]
     if isinstance(raw, str) and raw.strip():
@@ -493,13 +489,8 @@ def _expanded_path_list(raw: object) -> list[str]:
 class StateSettings:
     """QSettings drop-in backed by the consolidated state.json "settings" section.
 
-    Every value()/setValue() re-reads state.json and writes a fresh snapshot,
-    so concurrent presets/promoted saves and the other StateSettings
-    instances' own writes are never clobbered by a stale in-memory copy.
-    Settings traffic is low-frequency (dialog open/close), so the tiny reload
-    is cheap.  value() falls back to the given default for missing keys;
-    JSON-encodable scalars and str/list/dict values are stored verbatim.
-    """
+    Every read/write hits state.json fresh, so concurrent writers never clobber
+    each other; value() falls back to the given default; values stored verbatim."""
 
     def __init__(self, root: Path | None = None) -> None:
         self._root = Path(root) if root is not None else project_root()
@@ -529,10 +520,8 @@ class StateSettings:
 class _RevertDialog(QDialog):
     """Pick, per file with fix history, the backup state to restore it to.
 
-    Each row shows the file's fix kind, and its combo offers "Leave as is"
-    plus one entry per backup, newest fix first down to the original pre-fix
-    content.
-    """
+    Each row shows the file's fix kind; its combo offers "Leave as is" plus one
+    entry per backup, newest fix first down to the original pre-fix content."""
 
     def __init__(
         self,
@@ -708,8 +697,7 @@ def _iter_image_files(mod_dir: Path) -> list[Path]:
     """Image files under mod_dir, from a stack-based recursive walk.
 
     Directories whose name marks a genuine fix-backup are pruned; plain
-    ``DISABLED_`` folders are ordinary mod content and are searched too.
-    """
+    ``DISABLED_`` folders are ordinary mod content and are searched too."""
     files: list[Path] = []
     stack = [mod_dir]
     while stack:
@@ -730,10 +718,8 @@ def _iter_image_files(mod_dir: Path) -> list[Path]:
 def _ini_referenced_images(mod_dir: Path) -> set[tuple[str, ...]]:
     """Case-folded mod-relative parts of images referenced by mod .ini files.
 
-    ``path =``/``filename =`` resource values resolve against the ini's
-    own directory; values outside mod_dir or game-root-relative ``$``
-    paths are skipped.
-    """
+    ``path =``/``filename =`` values resolve against the ini's directory; values
+    outside mod_dir or game-root-relative ``$`` paths are skipped."""
     referenced: set[tuple[str, ...]] = set()
     stack = [mod_dir]
     while stack:
@@ -777,10 +763,8 @@ def _ini_referenced_images(mod_dir: Path) -> set[tuple[str, ...]]:
 def _mod_images(mod_dir: Path) -> list[Path]:
     """Unreferenced preview images under mod_dir, sorted by path.
 
-    Images referenced by a mod .ini resource line are internal assets
-    (textures, shader overlays) and are excluded; everything else counts
-    as a preview regardless of location.
-    """
+    Images referenced by a mod .ini resource line are internal assets and are
+    excluded; everything else counts as a preview regardless of location."""
     referenced = _ini_referenced_images(mod_dir)
     images = [
         path
@@ -930,10 +914,24 @@ def _toggle_row(label: str, key_display: str, parent: QWidget | None = None) -> 
     return row
 
 
+def _toggle_warning_text(warning: ToggleWarning) -> str:
+    """One diagnostics row text, prefixed only when a dependency is missing."""
+    if warning.severity == "dep":
+        return f"Missing dependency: {warning.message}"
+    return warning.message
+
+
 class _ModInfoDialog(QDialog):
     """Read-only key-toggle summary of a mod."""
 
-    def __init__(self, mod_dir: Path, parent: QWidget | None = None) -> None:
+    _warnings_ready = Signal(object)
+
+    def __init__(
+        self,
+        mod_dir: Path,
+        parent: QWidget | None = None,
+        mods_root: Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"Mod info — {mod_dir.name.removeprefix(_DISABLED_PREFIX)}")
         self._settings = StateSettings()
@@ -942,6 +940,11 @@ class _ModInfoDialog(QDialog):
             self.resize(QSize(saved[0], saved[1]))
         else:
             self.resize(240, 320)
+        self._dialog_closed = False
+        self._warnings_done = False
+        self._warnings_thread: threading.Thread | None = None
+        self._placeholder: QLabel | None = None
+        self._rows_layout: QVBoxLayout | None = None
         layout = QVBoxLayout(self)
         author = read_mod_author(mod_dir)
         if author is not None:
@@ -949,7 +952,8 @@ class _ModInfoDialog(QDialog):
             author_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             layout.addWidget(author_label)
         infos = scan_mod_info(mod_dir)
-        if not any(info.toggles for info in infos):
+        has_toggles = any(info.toggles for info in infos)
+        if mods_root is None and not has_toggles:
             layout.addWidget(QLabel("No key toggles found."))
             layout.addStretch(1)
             return
@@ -975,12 +979,110 @@ class _ModInfoDialog(QDialog):
                 rows_layout.addWidget(header)
             for toggle in info.toggles:
                 rows_layout.addWidget(_toggle_row(toggle.label, toggle.key_display, content))
-        rows_layout.addStretch(1)
+        if mods_root is None:
+            rows_layout.addStretch(1)
+        else:
+            if not has_toggles:
+                rows_layout.addWidget(QLabel("No key toggles found."))
+            rows_layout.addStretch(1)
+            self._rows_layout = rows_layout
+            self._warnings_ready.connect(self._on_warnings_ready)
+            self._warnings_thread = threading.Thread(
+                target=self._compute_warnings,
+                args=(mod_dir, mods_root),
+                daemon=True,
+            )
+            self._warnings_thread.start()
+            QTimer.singleShot(150, self._show_placeholder)
         scroll.setWidget(content)
         layout.addWidget(scroll, 1)
 
+    def _add_toggle_diagnostics(
+        self,
+        layout: QVBoxLayout,
+        warnings: Sequence[ToggleWarning],
+    ) -> None:
+        """Append a divider, the diagnostics header, and one row per warning below existing rows."""
+        if not warnings:
+            return
+        if layout.count() > 0:
+            divider = QFrame()
+            divider.setFrameShape(QFrame.Shape.HLine)
+            divider.setFrameShadow(QFrame.Shadow.Sunken)
+            layout.addWidget(divider)
+        header = QLabel("Toggle diagnostics")
+        header_palette = header.palette()
+        header_palette.setColor(
+            QPalette.ColorRole.Mid, _dimmed_color(header_palette, 0.4)
+        )
+        header.setPalette(header_palette)
+        header.setForegroundRole(QPalette.ColorRole.Mid)
+        layout.addWidget(header)
+        for warning in warnings:
+            row = QLabel(_toggle_warning_text(warning))
+            row.setWordWrap(True)
+            layout.addWidget(row)
+
+    def _compute_warnings(self, mod_dir: Path, mods_root: Path) -> None:
+        """Compute the toggle warnings off the GUI thread and emit them."""
+        warnings = compute_mod_toggle_warnings(mod_dir, mods_root)
+        try:
+            self._warnings_ready.emit(warnings)
+        except RuntimeError:
+            return
+
+    def _show_placeholder(self) -> None:
+        """Insert the pending-computation row above the trailing stretch while the compute runs."""
+        if self._warnings_done or self._dialog_closed:
+            return
+        placeholder = QLabel("Computing toggle diagnostics…")
+        placeholder_palette = placeholder.palette()
+        placeholder_palette.setColor(
+            QPalette.ColorRole.Mid, _dimmed_color(placeholder_palette, 0.4)
+        )
+        placeholder.setPalette(placeholder_palette)
+        placeholder.setForegroundRole(QPalette.ColorRole.Mid)
+        placeholder.setWordWrap(True)
+        self._placeholder = placeholder
+        layout = self._rows_layout
+        if layout is not None:
+            if layout.count() > 0:
+                layout.insertWidget(layout.count() - 1, placeholder)
+            else:
+                layout.addWidget(placeholder)
+
+    def _dismiss_placeholder(self) -> None:
+        """Remove the pending-computation row if it is currently shown."""
+        placeholder = self._placeholder
+        if placeholder is None:
+            return
+        self._placeholder = None
+        layout = self._rows_layout
+        if layout is not None:
+            layout.removeWidget(placeholder)
+        placeholder.hide()
+        placeholder.deleteLater()
+
+    def _on_warnings_ready(self, warnings: object) -> None:
+        """Insert the computed diagnostics rows above the trailing stretch, keeping it last."""
+        if self._dialog_closed:
+            return
+        if not isinstance(warnings, list):
+            return
+        self._warnings_done = True
+        self._dismiss_placeholder()
+        layout = self._rows_layout
+        if layout is not None:
+            if layout.count() > 0:
+                item = layout.itemAt(layout.count() - 1)
+                if isinstance(item, QSpacerItem):
+                    layout.removeItem(item)
+            self._add_toggle_diagnostics(layout, list(warnings))
+            layout.addStretch(1)
+
     def done(self, result: int) -> None:
         """Persist the dialog size, then finish the dialog."""
+        self._dialog_closed = True
         self._settings.setValue(
             "mod_info_size", [self.size().width(), self.size().height()]
         )
@@ -2806,8 +2908,7 @@ class MainWindow(QMainWindow):
         """Check upstream repos for newer commits without blocking the UI.
 
         Runs on its own worker slot (not the busy guard) so a slow or offline
-        network never stalls the app; unknown results re-check on a 60 s retry.
-        """
+        network never stalls the app; unknown results re-check on a 60 s retry."""
         if self._check_worker is not None:
             return
         if self._update_statuses is None:
@@ -2897,10 +2998,8 @@ class MainWindow(QMainWindow):
     ) -> None:
         """Offer locate/cleanup choices for mods missing after a rescan.
 
-        Runs only when the mods folder is unchanged from the previous scan;
-        fresh sessions (no previous root) and paths the app itself just
-        renamed or deleted never prompt.
-        """
+        Runs only when the mods folder is unchanged; fresh sessions (no previous
+        root) and paths the app itself just renamed or deleted never prompt."""
         new_mods_path = Path(self._mods_edit.text().strip())
         if previous_root is None:
             return
@@ -3251,12 +3350,8 @@ class MainWindow(QMainWindow):
     def _thumb_data_uri(self, mod_dir: Path, image: Path) -> str:
         """JPEG data URI of image area-normalized to ~48.4k px**2, "" on failure.
 
-        The scale is sqrt(48,400 / (w * h)), never upscaled (capped at 1.0)
-        and capped at 300px per dimension for extreme aspect ratios.  Alpha
-        is flattened onto the app window tone so JPEG keeps the look of the
-        surrounding view.  The memo key is the same ``mod_dir/relative``
-        pair as before; only the payload changed.
-        """
+        Scale = sqrt(48,400 / (w * h)), never upscaled (capped at 1.0), and 300px
+        max per dimension; alpha flattens onto the window tone; memoized per image."""
         try:
             relative = image.relative_to(mod_dir).as_posix()
         except ValueError:
@@ -3787,7 +3882,10 @@ class MainWindow(QMainWindow):
 
     def _show_mod_info(self, node: ModNode) -> None:
         """Open the read-only mod info summary dialog for one mod."""
-        self._mod_info_dialog = _ModInfoDialog(node.path, self)
+        mods_root = self._mods_edit.text().strip()
+        self._mod_info_dialog = _ModInfoDialog(
+            node.path, self, mods_root=Path(mods_root) if mods_root else None
+        )
         self._mod_info_dialog.exec()
 
     def _show_preview_gallery(self, node: ModNode) -> None:

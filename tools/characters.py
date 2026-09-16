@@ -28,8 +28,7 @@ class CharacterDB:
 def load_characters(repo_dir: Path) -> CharacterDB:
     """Load every .json in repo_dir/角色hash表 into a CharacterDB.
 
-    Files are visited sorted by filename so the reverse index order is
-    reproducible; a non-decodable file raises a ValueError naming the file.
+    Files are visited sorted by filename so the reverse index order is reproducible; a non-decodable file raises a ValueError naming the file.
     """
     db = CharacterDB()
     for path in sorted(characters_dir(repo_dir).glob("*.json"), key=lambda p: p.name):
@@ -120,8 +119,7 @@ def is_face_component(name: str) -> bool:
 def face_texcoord_hashes(db: CharacterDB) -> set[str]:
     """Current face-texcoord hashes from the character tables.
 
-    A hash qualifies when any of its usages is a face-named component's texcoord
-    field (either the "Texcoord" or "texcoord_vb" field spelling).
+    A hash qualifies when any of its usages is a face-named component's texcoord field (either the "Texcoord" or "texcoord_vb" field spelling).
     """
     found: set[str] = set()
     for hash_value, refs in db.reverse.items():

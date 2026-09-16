@@ -14,8 +14,7 @@ HASH_FULL_RE = re.compile(r"^[0-9a-fA-F]{8}$")
 def normalize_name(value: str) -> str:
     """Normalize a character/mod name for cross-matching.
 
-    Drops parenthetical segments, removes whitespace, dashes and underscores,
-    then lowercases, e.g. "哲-皮肤WiseSkin（头发共用）" becomes "哲皮肤wiseskin".
+    Drops parenthetical segments, removes whitespace, dashes and underscores, then lowercases, e.g. "哲-皮肤WiseSkin（头发共用）" becomes "哲皮肤wiseskin".
     """
     value = _PAREN_GROUP_RE.sub("", value)
     kept = (ch for ch in value if not ch.isspace() and ch not in _REMOVED_CHARS)

@@ -89,10 +89,8 @@ _DISABLED_PREFIX = "DISABLED_"
 def friendly_error(exc: BaseException) -> str:
     """Format a worker error message, special-casing a cleaned onefile runtime.
 
-    A PyInstaller onefile app extracts its stdlib archive (base_library.zip)
-    into a _MEI temp dir; if that dir is wiped while the app runs, imports
-    fail with a bare FileNotFoundError.  Map that to an actionable message.
-    """
+    A PyInstaller onefile app's _MEI temp dir (base_library.zip) wiped mid-run makes
+    imports fail with a bare FileNotFoundError; map that to an actionable message."""
     message = f"{type(exc).__name__}: {exc}"
     detail = str(exc)
     if isinstance(exc, OSError) and ("base_library.zip" in detail or "_MEI" in detail):
@@ -107,8 +105,7 @@ class TaskWorker(QThread):
     """Run ``fn(*args)`` in the background and report the outcome.
 
     Signals are emitted from the worker thread; Qt's queued connections
-    deliver them on the GUI thread of the connected receiver.
-    """
+    deliver them on the GUI thread of the connected receiver."""
 
     log = Signal(str)
     done = Signal(object)
@@ -123,9 +120,8 @@ class TaskWorker(QThread):
     ) -> None:
         """Prepare a task.
 
-        ``log_kwarg`` names the keyword parameter of ``fn`` that receives the
-        log callable (e.g. ``"log"``), or ``None`` when ``fn`` takes no log callable.
-        """
+        ``log_kwarg`` names the ``fn`` keyword parameter that receives the log
+        callable (e.g. ``"log"``), or ``None`` when ``fn`` takes no log callable."""
         super().__init__(parent)
         self._fn = fn
         self._args = args
@@ -153,8 +149,7 @@ def _as_paths(scope: Scope) -> tuple[bool, list[Path]]:
     """Interpret a scope as (is_dir, paths).
 
     A single Path/str is a directory path; a sequence is explicit file
-    paths (e.g. a single selected .ini row wrapped in a list).
-    """
+    paths (e.g. a single selected .ini row wrapped in a list)."""
     if isinstance(scope, (str, Path)):
         return True, [Path(scope)]
     return False, [Path(item) for item in scope]
@@ -166,9 +161,7 @@ def _parse_available(
     """Parse every hash-repo whose changelog exists; log and skip the others.
 
     Dump-kind variants (fix_tool) are not hash datasets and are skipped
-    silently; their parsed dump data is attached separately by
-    ``_attach_dump_data``.
-    """
+    silently; their dump data is attached separately by ``_attach_dump_data``."""
     datasets: dict[str, FixerData] = {}
     for variant, cache in repo_dirs.items():
         if variant not in hash_variants():
@@ -183,10 +176,8 @@ def _parse_available(
 def _attach_dump_data(datasets: dict[str, FixerData], log: LogFn) -> None:
     """Attach the parsed fix-tool dump cache to every loaded dataset.
 
-    The dump variant is shared rather than per-variant: one DumpData is set on
-    all datasets (the 2048p character DB splits dump folder names); without a
-    dump cache this is a silent no-op and every dataset keeps its empty dumps.
-    """
+    One shared DumpData is set on all datasets (the 2048p character DB splits
+    dump folder names); without a dump cache this is a silent no-op."""
     dump_cache = default_cache_dir("fix_tool")
     if not dump_cache.is_dir():
         return
@@ -218,10 +209,8 @@ def _fallback_dataset(log: LogFn) -> FixerData:
 def update_data_worker(parent: QObject | None = None) -> TaskWorker:
     """Worker that ensures every variant repo, then parses the available ones.
 
-    Unreachable variants are logged and skipped; with no cloned data at all,
-    a fallback dataset (legacy chains, pcdata, user patches) is used so the
-    GUI never blocks; ``done`` carries ``(repo_dirs, datasets, heads, structure)``.
-    """
+    Unreachable variants are logged and skipped; with nothing cloned, a fallback
+    dataset is used; ``done`` carries ``(repo_dirs, datasets, heads, structure)``."""
 
     def job(
         log: LogFn,
@@ -249,11 +238,8 @@ def update_data_worker(parent: QObject | None = None) -> TaskWorker:
 def load_all_data_worker(parent: QObject | None = None) -> TaskWorker:
     """Worker that parses every locally cloned variant repo, no network access.
 
-    A variant without a local clone is logged as a hint to update; with no
-    cloned data at all, a fallback dataset (legacy chains, pcdata, user
-    patches) is used; ``done`` carries ``(repo_dirs, datasets, heads, structure)``
-    like ``update_data_worker``.
-    """
+    Missing clones are logged as an update hint; with nothing cloned, a fallback
+    dataset is used; ``done`` carries the same 4-tuple as ``update_data_worker``."""
 
     def job(
         log: LogFn,
@@ -273,9 +259,8 @@ def load_all_data_worker(parent: QObject | None = None) -> TaskWorker:
 def check_updates_worker(parent: QObject | None = None) -> TaskWorker:
     """Worker that checks both variant repos for upstream updates.
 
-    Pure network read that never mutates the local clones or parses anything;
-    ``done`` maps each variant to True (newer commits), False (up to date), or None (offline).
-    """
+    Pure network read that never mutates local clones or parses anything;
+    ``done`` maps each variant to True (newer), False (up to date), None (offline)."""
 
     def job() -> dict[str, bool | None]:
         return {
@@ -294,8 +279,7 @@ def analyze_worker(
     """Worker that analyses a mods folder; ``done`` carries (ModNode, AnalysisSummary).
 
     Structural rule knowledge from the loaded variants is passed to the analysis;
-    ``structure`` accepts a prebuilt StructureData or is derived from the datasets.
-    """
+    ``structure`` accepts a prebuilt StructureData or is derived from the datasets."""
     mapping = datasets if isinstance(datasets, Mapping) else {DEFAULT_VARIANT: datasets}
 
     def job():
@@ -350,11 +334,8 @@ def fix_mod_worker(
 ) -> TaskWorker:
     """Scan one mod/file scope and apply its fixes in one background job.
 
-    Applies run in a bounded fixpoint with one store backup per file per run; folder
-    scopes then remap bound blend buffers using data/blend_remaps.json and upgrade
-    face texcoord buffers to the post-2.54 float32 format, both with store backups;
-    ``done`` carries ``(variant, plans, written)``.
-    """
+    Bounded-fixpoint applies with one store backup per file per run; folder scopes
+    also remap blend + texcoord buffers; ``done`` carries (variant, plans, written)."""
 
     def job(log: LogFn) -> tuple[str, list[FilePlan], int]:
         nonlocal structure
@@ -445,8 +426,7 @@ def backup_chains_worker(
     """Enumerate fix-backup chains in the app-local store for a scope.
 
     A Path/str scope restricts the chains to that directory's subtree; ``done``
-    carries dict[Path, backup chain mapping] either way.
-    """
+    carries dict[Path, backup chain mapping] either way."""
     mods_dir = Path(mods_dir)
     store_dir = default_backups_dir()
     is_dir, paths = _as_paths(root)
@@ -469,16 +449,8 @@ def revert_worker(
 ) -> TaskWorker:
     """Restore live files from chosen backups; ``done`` carries the count restored.
 
-    Pre-validates that every chosen backup still exists before restoring
-    anything, so a stale dialog cannot half-apply.
-
-    With ``mods_dir`` and ``store_dir`` both given, the restore is followed by:
-
-    - pruning texcoord-upgrade markers whose live buffer was restored
-      byte-identical to its pre-upgrade content;
-    - pruning blend-remap markers restored to their pre-remap bytes;
-    - pruning store folders left empty by the consumed backups.
-    """
+    Pre-validates backups exist so a stale dialog cannot half-apply; with dirs
+    given, prunes texcoord/blend markers and emptied store folders afterwards."""
 
     def job(log: LogFn) -> int:
         missing = [str(b) for _, b in choices if not Path(b).exists()]
@@ -609,10 +581,8 @@ def delete_folder_worker(
 ) -> TaskWorker:
     """Delete a mod or category folder; presets, backup history and markers follow.
 
-    ``kind`` is the ModNode kind ("mod" or "category"); mods use the stored
-    DISABLED_-leaf-cleaned entry form, categories keep their on-disk name.
-    ``done`` carries (deleted_path, file_count).
-    """
+    ``kind`` is the ModNode kind; mods use the DISABLED_-leaf-cleaned stored entry
+    form, categories the on-disk name; ``done`` carries (deleted_path, file_count)."""
 
     def job(log: LogFn) -> tuple[Path, int]:
         mods = Path(mods_dir)

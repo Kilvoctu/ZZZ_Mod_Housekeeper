@@ -84,10 +84,8 @@ def _collect_face_texcoord_hashes(
 ) -> frozenset[str]:
     """Every known face-texcoord hash for upgrade gating.
 
-    Sources: the changelog's face-block texcoord transitions (from and to) and
-    the character table's face-component texcoord fields; older chain steps
-    whose to-hash reached that set are pulled in so stale mods match too.
-    """
+    Sources: changelog face-block texcoord transitions (from and to) and the character table's
+    face-component texcoord fields, plus older chain steps whose to-hash reached that set (stale mods match too)."""
     hashes: set[str] = set()
     if changelog_file is not None and changelog_file.is_file():
         transitions = parse_face_texcoord_transitions_file(changelog_file)
@@ -119,12 +117,8 @@ def load_fixer_data(
 ) -> FixerData:
     """Parse the data repo changelog and character JSONs into FixerData.
 
-    Legacy pre-2.0 history merges ahead of the changelog; ``include_pcdata`` ingests
-    the importer dataset as hint-gated gap-fill (buffer-coupled hashes excluded).
-    A ``None`` ``repo_dir`` skips the changelog and character DB entirely (no repo
-    cloned) while legacy chains, pcdata gap-fill and user patches still apply.
-    ``dumps`` attaches pre-parsed fix-tool dump data instead of an empty DumpData.
-    """
+    Legacy pre-2.0 history merges ahead of the changelog; ``include_pcdata`` ingests the importer dataset as hint-gated gap-fill (buffer-coupled hashes excluded); ``dumps`` attaches pre-parsed dump data.
+    ``repo_dir=None`` skips the changelog and character DB entirely while legacy chains, pcdata gap-fill and user patches still apply."""
     if repo_dir is None:
         real: list[ChangeEntry] = []
     else:
@@ -213,9 +207,7 @@ def load_fixer_data(
 def known_hashes(data: FixerData) -> set[str]:
     """Every hash the dataset can explain, lowercased.
 
-    Union of the character-DB reverse index, changelog chain sources and
-    changelog target hashes: anything scan/fix logic can classify.
-    """
+    Union of the character-DB reverse index, changelog chain sources and targets: anything scan/fix logic can classify."""
     known = set(data.db.reverse)
     known.update(data.chains)
     for entry in data.entries:
@@ -232,9 +224,8 @@ def known_hashes(data: FixerData) -> set[str]:
 def hash_is_outdated(h: str, data: FixerData, hint: str = "") -> bool:
     """Pessimistic changelog outdatedness for one hash.
 
-    True when the chain resolution is ambiguous (None) or leads to a different hash; a
-    round-trip means already current, and a matching hint fires hint-gated legacy edges.
-    """
+    True when chain resolution is ambiguous (None) or leads to a different hash; a round-trip
+    means already current, and a matching hint fires hint-gated legacy edges."""
     resolved = resolve_hash_chain(h, hint, data)
     return resolved is None or bool(resolved)
 
@@ -246,9 +237,8 @@ def detect_variant(
 ) -> str | None:
     """Detect which dataset variant a scope's hashes belong to.
 
-    Scores count only exclusive matches; highest exclusive score wins, ties break by
-    total known hashes, no exclusive match returns None.  ``known`` precomputes sets.
-    """
+    Scores count only exclusive matches; highest exclusive score wins, ties break by total
+    known hashes, no exclusive match returns None.  ``known`` precomputes sets."""
     if known is None:
         known = {variant: known_hashes(data) for variant, data in datasets.items()}
     exclusive = dict.fromkeys(known, 0)
@@ -321,8 +311,7 @@ def resolve_hash_chain(h: str, hint: str, data: FixerData) -> list[ChangeEntry] 
     """Follow the changelog chain for h in ascending version order.
 
     Returns the applied steps, or None when ambiguous: candidates sharing the lowest
-    version_index but differing to_hash, unresolved by the hint; [] on a round-trip.
-    """
+    version_index but differing to_hash, unresolved by the hint; [] on a round-trip."""
     patch = data.user_patches.get(h.lower())
     if patch is not None:
         if patch.to_hash and patch.to_hash != h.lower():
@@ -405,8 +394,7 @@ def _entry_index_arrays(
     """The (from, to) index arrays one index-mapping step uses, or None.
 
     kind "counts" prefers the object_index_counts arrays when both are present, else
-    falls back to object_indexes; kind "indexes" always uses object_indexes.
-    """
+    falls back to object_indexes; kind "indexes" always uses object_indexes."""
     if (
         kind == "counts"
         and entry.from_index_counts is not None
@@ -427,8 +415,7 @@ def walk_index_value(
     """Map an integer through successive object_indexes array changes.
 
     Follows the IB hash's remap arrays ascending by version; the value's first
-    From-array position selects the To-array replacement (stops when absent).
-    """
+    From-array position selects the To-array replacement (stops when absent)."""
     if kind not in ("indexes", "counts"):
         raise ValueError(f"unknown index-array kind: {kind!r}")
     current = start
@@ -474,9 +461,8 @@ def _is_mesh_ib_rename(
 ) -> bool:
     """True when a hash rename renames a mesh IB whose binaries index vertices.
 
-    Table-driven: the character table's role-"ib" HashRef on the resolved-to
-    hash decides; chain steps with role "ib" are the fallback.
-    """
+    Table-driven: the character table's role-"ib" HashRef on the resolved-to hash decides;
+    chain steps with role "ib" are the fallback."""
     if any(entry.role == "ib" for entry in steps):
         return True
     return any(ref.role == "ib" for ref in data.db.reverse.get(new, []))
@@ -529,10 +515,8 @@ def _face_texcoord_repoint_target(
 ) -> str | None:
     """Current face texcoord hash an untracked texcoord override should use, or None.
 
-    Fires only when the section hint names a texcoord (and not an eyebrow) and
-    the file also overrides a known face IB; hash-named sections have no
-    character token in the hint, so the face IB is the character evidence.
-    """
+    Fires only when the section hint names a texcoord (and not an eyebrow) and the file also
+    overrides a known face IB; hash-named sections have no character token, so the face IB is the character evidence."""
     if not hint or "texcoord" not in hint:
         return None
     if "eyebrow" in hint or "眉" in hint:
@@ -996,8 +980,7 @@ def _scan_index_remaps(
     """match_first_index suggestions and index warnings for IB sections.
 
     Sections group by chain-resolved current hash; suggestions fire when every
-    character-table candidate pairing agrees, warnings replace them otherwise.
-    """
+    character-table candidate pairing agrees, warnings replace them otherwise."""
     groups: dict[str, list[_IndexScan]] = {}
     for sec in sections:
         if not sec.hashes:
@@ -1081,9 +1064,7 @@ def _scan_file_details(
 ) -> tuple[str, str, list[FixSuggestion]]:
     """Read one .ini file and return (text, encoding, suggestions).
 
-    With a StructureData, structural suggestions are appended after the
-    line-level ones.
-    """
+    With a StructureData, structural suggestions are appended after the line-level ones."""
     text, encoding = _read_ini_details(path)
     sections = _parse_sections(text)
     suggestions = _scan_text(text, data, file=str(path))
@@ -1148,8 +1129,7 @@ def parse_ini_facts(text: str) -> tuple[dict[str, set[str]], list[_Section]]:
     """Texture-override hints and parsed sections from one parse pass over text.
 
     ``hints`` matches ``ini_hints`` exactly; ``sections`` feeds
-    ``structural_fix_count_sections`` for structural counting without a reparse.
-    """
+    ``structural_fix_count_sections`` for structural counting without a reparse."""
     sections = _parse_sections(text)
     hints: dict[str, set[str]] = {}
     for section in sections:
@@ -1167,16 +1147,8 @@ _INI_PARSE_MEMO: OrderedDict[tuple[str, int, int], tuple[str, dict, list]] = Ord
 def cached_ini_parse(path: Path) -> tuple[str, dict, list] | None:
     """(text, hints, sections) for a .ini file, memoized across analysis runs.
 
-    Keyed by (path, st_mtime_ns, st_size) in an LRU OrderedDict capped at
-    ``_INI_PARSE_MEMO_CAP``: hits move to the end and the oldest entry is
-    evicted past the cap. os.stat OSError (missing path) and read OSError
-    (a directory path stats fine but read fails) return None; undecodable
-    bytes raise ValueError — failures are never memoized. No locking: only
-    one TaskWorker runs at a time. scan_folder/scan_files/_scan_file_details
-    stay unwired on purpose: apply_plan writes back via the raw ``encoding``
-    only _scan_file_details decodes, and its ``write_bytes`` bumps the mtime
-    (a natural memo miss anyway).
-    """
+    Keyed by (path, st_mtime_ns, st_size) in an LRU OrderedDict capped at ``_INI_PARSE_MEMO_CAP`` (hits move to the end, oldest evicted past the cap); os.stat OSError and read OSError (a directory path stats fine but read fails) return None; undecodable bytes raise ValueError — failures are never memoized; no locking (only one TaskWorker runs at a time).
+    scan_folder/scan_files/_scan_file_details stay unwired on purpose: apply_plan writes back via the raw ``encoding`` only _scan_file_details decodes, and its ``write_bytes`` bumps the mtime (a natural memo miss anyway)."""
     try:
         stat = Path(path).stat()
     except OSError:
@@ -1200,9 +1172,8 @@ def cached_ini_parse(path: Path) -> tuple[str, dict, list] | None:
 def collect_texture_override_hashes(path: Path) -> list[str]:
     """Unique lowercased hash values from `hash =` lines inside [TextureOverride…] sections.
 
-    Non-TextureOverride sections are ignored, so shader and stray hashes are excluded;
-    returns hashes sorted ascending, [] for unreadable or undecodable files.
-    """
+    Non-TextureOverride sections are ignored, so shader and stray hashes are excluded; hashes are
+    sorted ascending, [] for unreadable or undecodable files."""
     try:
         text = read_ini_text(path)
     except (ValueError, OSError):
@@ -1213,9 +1184,8 @@ def collect_texture_override_hashes(path: Path) -> list[str]:
 def collect_texture_override_hints(path: Path) -> dict[str, set[str]]:
     """Map each TextureOverride hash to the normalized section hints it appears under.
 
-    Same sections and ``hash =`` lines as collect_texture_override_hashes (one hint
-    per section); {} for unreadable or undecodable files.
-    """
+    Same sections and ``hash =`` lines as collect_texture_override_hashes (one hint per section);
+    {} for unreadable or undecodable files."""
     try:
         return ini_hints(read_ini_text(path))
     except (ValueError, OSError):
@@ -1228,8 +1198,7 @@ def scan_folder(
     """Scan every .ini under mods_dir recursively and return non-empty plans.
 
     Skips files or path components named DISABLED_versionfix_/DISABLED_BACKUP_ (genuine
-    DISABLED-named files still scan); a StructureData appends structural suggestions.
-    """
+    DISABLED-named files still scan); a StructureData appends structural suggestions."""
     mods_dir = Path(mods_dir)
     plans: list[FilePlan] = []
     for path in included_ini_files(mods_dir):
@@ -1247,9 +1216,8 @@ def scan_files(
 ) -> list[FilePlan]:
     """Scan explicit .ini file paths (no directory recursion, no gating).
 
-    Skips undecodable or unreadable files and directories; a StructureData appends
-    structural suggestions.
-    """
+    Skips undecodable or unreadable files and directories; a StructureData appends structural
+    suggestions."""
     plans: list[FilePlan] = []
     for path in paths:
         path = Path(path)
@@ -1314,9 +1282,8 @@ def apply_plan(
 ) -> bool:
     """Apply one file's fixes, backing up the original.  Returns True when written.
 
-    The file is re-scanned first by default (``suggestions`` skips the scan);
-    ``backup=False`` writes without a new backup (fixpoint pass 2+).
-    """
+    The file is re-scanned first by default (``suggestions`` skips the scan); ``backup=False``
+    writes without a new backup (fixpoint pass 2+)."""
     path = Path(plan.path)
     if suggestions is None:
         text, encoding, suggestions = _scan_file_details(path, data, structure)
@@ -1408,8 +1375,7 @@ def revert_backups(
     """Restore live files from the chosen backup of each chain.
 
     Only the chosen backup is consumed; other chain entries stay for further reverts.
-    Returns the number of files restored.
-    """
+    Returns the number of files restored."""
     restored = 0
     for live, chosen in choices:
         move_file(chosen, live)

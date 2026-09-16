@@ -19,8 +19,7 @@ def canonical_key(relative: str) -> str:
 def load_promoted(root: Path | None = None) -> dict[str, str]:
     """Read {mod relative path: image relative name} from state.json; {} on missing, undecodable or non-dict JSON.
 
-    Keys are canonicalized on read, healing pre-canonical entries that still
-    carry a raw DISABLED_ leaf.
+    Keys are canonicalized on read, healing pre-canonical entries that still carry a raw DISABLED_ leaf.
     """
     promoted: dict[str, str] = {}
     section = load_state(root)["promoted"]

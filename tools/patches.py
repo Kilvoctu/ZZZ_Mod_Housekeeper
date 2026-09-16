@@ -20,8 +20,7 @@ def user_patches_dir() -> Path:
 def parse_user_patches(text: str) -> dict[str, ChangeEntry]:
     """Parse one patch file's text into {old_hash: ChangeEntry}, keyed by from_hash.
 
-    Each valid line is one "old to new" rename with role "user"; malformed
-    lines are skipped and later lines override earlier ones.
+    Each valid line is one "old to new" rename with role "user"; malformed lines are skipped and later lines override earlier ones.
     """
     patches: dict[str, ChangeEntry] = {}
     for line in text.splitlines():

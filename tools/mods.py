@@ -1,9 +1,7 @@
 """Classify mod folders and analyze each mod's game-version status.
 
-A mod root is the highest directory directly holding an included .ini or a
-``mod.json``; backups are excluded and hashes are classified as the fixer
-resolves them. A mod root may be promoted to a wrapper parent that holds
-only loose files (e.g. a readme) and that single nested mod root.
+A mod root is the highest directory directly holding an included .ini or a ``mod.json``; backups are excluded and hashes are classified as the fixer resolves them.
+A mod root may be promoted to a wrapper parent that holds only loose files (e.g. a readme) and that single nested mod root.
 """
 
 import os
@@ -55,8 +53,7 @@ def set_mod_enabled(path: Path, enabled: bool) -> Path:
     """Rename a mod folder between ``<Name>`` and ``DISABLED_<Name>``.
 
     A no-op returning ``path`` when the folder is already in the requested
-    state; raises FileExistsError instead of overwriting an existing target.
-    """
+    state; raises FileExistsError instead of overwriting an existing target."""
     name = path.name
     if enabled:
         if not name.startswith(_DISABLED_PREFIX):
@@ -109,8 +106,7 @@ def create_mod_folder(mods_dir: Path, name: str) -> Path:
     """Create a new empty folder directly under mods_dir and return it.
 
     Surrounding whitespace is stripped; raises ValueError for blank names,
-    invalid Windows filename characters, a trailing dot, or duplicates.
-    """
+    invalid Windows filename characters, a trailing dot, or duplicates."""
     cleaned = validate_folder_name(name)
     target = Path(mods_dir) / cleaned
     if target.exists():
@@ -155,11 +151,8 @@ def analyze_mods(
 ) -> tuple[ModNode, AnalysisSummary]:
     """Build the mod tree under root and analyze every mod's and file's version.
 
-    ``datasets`` is one FixerData (default variant) or a mapping of variant
-    keys to FixerData; a StructureData also counts pending structural fixes.
-    Empty directories (no mods anywhere beneath) are built as category nodes
-    with ``empty_folder=True``; the UI decides whether to display them.
-    """
+    ``datasets`` is one FixerData (default variant) or a mapping of variant keys to FixerData; a StructureData also counts pending structural fixes.
+    Empty directories (no mods anywhere beneath) are built as category nodes with ``empty_folder=True``; the UI decides whether to display them."""
     root = Path(root)
     if isinstance(datasets, FixerData):
         datasets = {DEFAULT_VARIANT: datasets}
@@ -192,10 +185,8 @@ def analyze_scope(
 ) -> None:
     """Re-analyze one already-built mod or category subtree in place.
 
-    ``datasets`` normalizes a bare FixerData like analyze_mods; raises
-    ValueError for root nodes (callers fall back to analyze_mods) and file
-    nodes (callers resolve the containing mod first).
-    """
+    ``datasets`` normalizes a bare FixerData like analyze_mods; raises ValueError for root nodes
+    (callers fall back to analyze_mods) and file nodes (callers resolve the containing mod first)."""
     if node.kind == "root":
         raise ValueError("analyze_scope cannot re-analyze the mods root node")
     if node.kind == "file":
@@ -224,8 +215,7 @@ def retarget_subtree_paths(node: ModNode, new_path: Path) -> None:
     """Rebase node and its whole subtree onto a relocated directory.
 
     Used after a DISABLED_ toggle rename so later subtree file reads target
-    the renamed folder instead of the stale pre-rename paths.
-    """
+    the renamed folder instead of the stale pre-rename paths."""
     old_path = node.path
     node.path = new_path
     for child in node.children:
@@ -272,10 +262,8 @@ def _scan_dir(
 ) -> int:
     """Collect one directory subtree's relative parts in a single scandir pass.
 
-    Records directory parts, every regular file's parts, included .ini parts
-    and mod.json presence into the accumulators; backup-named subdirectories
-    are pruned and their .ini count (skipped backups) is returned.
-    """
+    Records directory parts, every regular file's parts, included .ini parts and mod.json presence into the accumulators;
+    backup-named subdirectories are pruned and their .ini count (skipped backups) is returned."""
     dirs.add(parts)
     path = root.joinpath(*parts) if parts else root
     pruned = 0
@@ -312,12 +300,8 @@ def _mod_roots(
 ) -> set[Path]:
     """Mod root of every included ini.
 
-    Each ini's candidate chain runs root-down to its parent, and the first
-    directory on it that directly holds an included ini or a mod.json wins.
-    Container and part-pack winners are then promoted to their parent, and a
-    final single-pass wrapper promotion moves a winner up to a parent that
-    holds only loose non-.ini files plus that one nested winner.
-    """
+    Each ini's candidate chain runs root-down to its parent, and the first directory on it that directly holds an included ini or a mod.json wins.
+    Container and part-pack winners are then promoted to their parent, and a final single-pass wrapper promotion moves a winner up to a parent that holds only loose non-.ini files plus that one nested winner."""
     mod_roots: set[Path] = set()
     for path in included:
         chain = [root]
@@ -453,10 +437,8 @@ def _build_tree(root: Path) -> tuple[ModNode, int, bool, set[str]]:
 def _exists_lookup(existing: set[str]) -> Callable[[Path], bool]:
     """Existence probe trusting the walk's file set before touching the disk.
 
-    A lowercase set hit answers True without a stat; anything else (files
-    created after the walk, paths that lexically escape the root) falls back
-    to a real ``is_file()`` so the answer stays truthful.
-    """
+    A lowercase set hit answers True without a stat; anything else (files created after the walk, paths
+    that lexically escape the root) falls back to a real ``is_file()`` so the answer stays truthful."""
 
     def lookup(path: Path) -> bool:
         return str(path).lower() in existing or path.is_file()
@@ -470,8 +452,7 @@ def version_ladder(
     """Map version_index -> (left label, right label), split on the arrow.
 
     The first entry seen for a version_index wins.  Returns the ladder and
-    latest_index (0 when there are no entries, i.e. no ladder at all).
-    """
+    latest_index (0 when there are no entries, i.e. no ladder at all)."""
     ladder: dict[int, tuple[str, str]] = {}
     latest_index = 0
     for entry in entries:
@@ -502,8 +483,7 @@ def _earliest_fixable(
     """Earliest breaking entry for one hash across its section hint contexts.
 
     Each hint resolves its own chain like the fixer does per line; returns
-    None when no context is fixable, else the smallest-version_index entry.
-    """
+    None when no context is fixable, else the smallest-version_index entry."""
     earliest: ChangeEntry | None = None
     for hint in contexts:
         resolved = resolve_hash_chain(hash_value, hint, data)
@@ -528,8 +508,7 @@ def version_for_hashes(
     """Aggregate the version status of one scope's unique hashes.
 
     Every hash is resolved once per section hint exactly the way the fixer resolves
-    it per line; hashes with no applicable rename stay unknown even when chain-known.
-    """
+    it per line; hashes with no applicable rename stay unknown even when chain-known."""
     unique = sorted(set(hashes))
     version = ModVersion(total=len(unique))
     best_rank: int | None = None
@@ -569,11 +548,8 @@ _SLOT_ROLES = {"vb0": "position", "vb1": "texcoord", "vb2": "blend"}
 def _dump_layout_for_hash(bind: BufferBind, data: FixerData) -> DumpLayout | None:
     """The dump layout covering this bind's hash, or None when uncovered.
 
-    Direct lookup: the bind hash matches a dump component's index buffer, so
-    that component's layout for the slot's role applies.  Fallback: the bind
-    hash matches the slot role's current hash.  Both take the first sorted
-    match.
-    """
+    Direct lookup: the bind hash matches a dump component's index buffer, so that component's layout for the slot's role applies.
+    Fallback: the bind hash matches the slot role's current hash.  Both take the first sorted match."""
     role = _SLOT_ROLES.get(bind.slot)
     if role is None:
         return None
@@ -595,12 +571,8 @@ def _dump_layout_for_hash(bind: BufferBind, data: FixerData) -> DumpLayout | Non
 def _bind_is_broken(bind: BufferBind, data: FixerData) -> bool:
     """Whether one buffer bind is diagnosed broken against the fixer data.
 
-    A declared-but-absent binary is broken (.buf and .ib alike); a present
-    vertex buffer with a declared stride is broken when the covering dump
-    layout's stride disagrees, and dump-uncovered texcoord binds fall back to
-    the legacy face gate (the 36-byte pre-2.54 face format).  Undeclared
-    strides are never diagnosed.  Index buffers only ever break by missing.
-    """
+    A declared-but-absent binary is broken (.buf and .ib alike); a present vertex buffer with a declared stride is broken when the covering dump layout's stride disagrees, and dump-uncovered texcoord binds fall back to the legacy face gate (the 36-byte pre-2.54 face format).
+    Undeclared strides are never diagnosed.  Index buffers only ever break by missing."""
     if not bind.exists:
         return bind.filename != ""
     if bind.slot not in _SLOT_ROLES:
@@ -631,12 +603,8 @@ def _analyze_node(
 ) -> tuple[set[str], dict[Path, dict[str, set[str]]]]:
     """Analyze node in place; return (subtree hash union, per-file hints).
 
-    File nodes get their own hashes' version, mod nodes (and a qualifying
-    root) the subtree union's version; every .ini is read exactly once.
-    ``exists`` routes bind existence probes through the walk's file set
-    when supplied (analyze_mods); analyze_scope omits it so re-analysis
-    probes the real disk and sees files created since the initial walk.
-    """
+    File nodes get their own hashes' version, mod nodes (and a qualifying root) the subtree union's version; every .ini is read exactly once.
+    ``exists`` routes bind existence probes through the walk's file set when supplied (analyze_mods); analyze_scope omits it so re-analysis probes the real disk and sees files created since the initial walk."""
     hashes: set[str] = set()
     file_hints: dict[Path, dict[str, set[str]]] = {}
     file_structural = file_structural if file_structural is not None else {}
@@ -715,10 +683,8 @@ def _version_subtree_files(
 ) -> tuple[int, int]:
     """Version every file node inside a mod's subtree against its dataset.
 
-    Directory nodes inside the subtree inherit the mod's detected variant,
-    and file versions reuse the collected hint maps (each .ini read only once).
-    Returns (structural_total, broken_total) accumulated over the subtree.
-    """
+    Directory nodes inside the subtree inherit the mod's detected variant, and file versions reuse the collected hint maps (each .ini read only once).
+    Returns (structural_total, broken_total) accumulated over the subtree."""
     file_binds = file_binds if file_binds is not None else {}
     structural_total = 0
     broken_total = 0
@@ -754,11 +720,8 @@ def _version_subtree_files(
 def aggregate_updates(node: ModNode) -> str:
     """Subtree update signal for a version-less directory row (category/subfolder).
 
-    "buffers" (broken shipped buffers: missing or old-format) outranks
-    "old hash" (chain-fixable stale hashes), which outranks "sections"
-    (pending structural ini insertions), which outranks "up to date";
-    "" when no nested versioned node is classifiable.
-    """
+    "buffers" (broken shipped buffers: missing or old-format) outranks "old hash" (chain-fixable stale hashes), which outranks "sections" (pending structural ini insertions), which outranks "up to date";
+    "" when no nested versioned node is classifiable."""
     broken = False
     outdated = False
     structural = False

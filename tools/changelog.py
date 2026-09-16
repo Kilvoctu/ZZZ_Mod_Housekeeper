@@ -26,8 +26,7 @@ _VERSION_TAG_RE = re.compile(r"v\d+(?:\.\d+)*(?:热更新)?")
 def parse_changelog(text: str) -> list[ChangeEntry]:
     """Parse the changelog text into chronologically ordered change entries.
 
-    Version sections appear newest-first in the file, so version_index is assigned
-    bottom-up: the oldest section gets 1, and the returned list is ascending (oldest first).
+    Version sections appear newest-first in the file, so version_index is assigned bottom-up: the oldest section gets 1, and the returned list is ascending (oldest first).
     """
     pre_entries: list[ChangeEntry] = []
     sections: list[tuple[str, list[ChangeEntry]]] = []
@@ -175,10 +174,7 @@ def parse_face_texcoord_transitions_file(path: Path) -> dict[str, str]:
 def parse_face_texcoord_transitions(text: str) -> dict[str, str]:
     """Map from_hash -> to_hash for texcoord child lines under face-labeled IB lines.
 
-    A child line belongs to the nearest preceding "IB: ...（label）" line of its
-    character group; only labels containing 脸 (face) qualify, and version
-    headers and character groups reset the context. The first edge per from-hash
-    wins (the file is newest-first, so that is the most recent transition).
+    A child line belongs to the nearest preceding "IB: ...（label）" line of its character group; only labels containing 脸 (face) qualify, and version headers and character groups reset the context. The first edge per from-hash wins (the file is newest-first, so that is the most recent transition).
     """
     transitions: dict[str, str] = {}
     label = ""
@@ -227,8 +223,7 @@ def parse_face_texcoord_transitions(text: str) -> dict[str, str]:
 def build_chain_index(entries: list[ChangeEntry]) -> dict[str, list[ChangeEntry]]:
     """Map from_hash -> entries with that from_hash, sorted ascending by version_index.
 
-    Entries without a from_hash, and from_hash values that are not 8 hex
-    characters, are excluded.
+    Entries without a from_hash, and from_hash values that are not 8 hex characters, are excluded.
     """
     index: dict[str, list[ChangeEntry]] = {}
     for entry in entries:
@@ -244,8 +239,7 @@ def build_chain_index(entries: list[ChangeEntry]) -> dict[str, list[ChangeEntry]
 def _parse_ib_line(rest: str) -> tuple[list[str], str | None, str | None] | None:
     """Parse the text after "IB:" on one IB line.
 
-    Returns (from_hashes, to_hash, component_label); to_hash is None when the line carries no
-    transition (several IBs whose only children changed); malformed lines return None.
+    Returns (from_hashes, to_hash, component_label); to_hash is None when the line carries no transition (several IBs whose only children changed); malformed lines return None.
     """
     parts = ARROW_SPLIT_RE.split(rest.strip(), maxsplit=1)
     if len(parts) != 2:
@@ -282,8 +276,7 @@ def _parse_int_list(bracketed: str) -> list[int] | None:
 def _group_characters(header: str) -> list[str]:
     """Normalized character names from the text inside one 【...】 header.
 
-    Tokens are split on "/" and " - "; version tags like "v3.01热更新" and
-    tokens without any CJK or ASCII letter (e.g. "5" in "5/13热更新") are dropped.
+    Tokens are split on "/" and " - "; version tags like "v3.01热更新" and tokens without any CJK or ASCII letter (e.g. "5" in "5/13热更新") are dropped.
     """
     names: list[str] = []
     for part in header.split("/"):

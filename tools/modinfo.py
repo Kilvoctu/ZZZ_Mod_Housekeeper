@@ -13,8 +13,8 @@ from .backups import included_ini_files
 from .fixer import read_ini_text
 
 _SECTION_RE = re.compile(r"^\[(.+)]$")
-_KEY_RE = re.compile(r"^key\s*=\s*(.+)$")
-_BACK_RE = re.compile(r"^back\s*=\s*(.+)$")
+_KEY_RE = re.compile(r"^key\s*=\s*(.+)$", re.IGNORECASE)
+_BACK_RE = re.compile(r"^back\s*=\s*(.+)$", re.IGNORECASE)
 _VAR_RE = re.compile(r"^\$(\w+)\s*=\s*(.+)$")
 _STATE_NAME_RE = re.compile(r"^\s*;\s*\[([^]]+)]")
 _SWAP_RE = re.compile(r"^(ps-t\d+)\s*=\s*(.+)$")
@@ -269,8 +269,7 @@ def parse_ini_info(text: str, display_path: str = "") -> ModIniInfo:
 def scan_mod_info(mod_dir: Path) -> list[ModIniInfo]:
     """Mod-info facts for every included .ini under mod_dir, in order.
 
-    Files failing to decode are skipped; display paths are mod_dir-relative
-    posix, falling back to the absolute string path.
+    Files failing to decode are skipped; display paths are mod_dir-relative posix, falling back to the absolute string path.
     """
     mod_dir = Path(mod_dir)
     infos: list[ModIniInfo] = []
@@ -290,8 +289,7 @@ def scan_mod_info(mod_dir: Path) -> list[ModIniInfo]:
 def read_mod_author(mod_dir: Path) -> str | None:
     """Author string from mod.json inside mod_dir, or None.
 
-    Returns None for a missing, unparsable or non-object file, or when
-    the author value is missing, empty or "unknown" (case-insensitive).
+    Returns None for a missing, unparsable or non-object file, or when the author value is missing, empty or "unknown" (case-insensitive).
     """
     mod_dir = Path(mod_dir)
     path = mod_dir / "mod.json"

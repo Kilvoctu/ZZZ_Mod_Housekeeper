@@ -32,8 +32,7 @@ def _version_key(token: str) -> tuple[float, str]:
 def _label_sort_key(label: str) -> tuple[tuple[float, str], tuple[float, str]]:
     """Chronological sort key for one label like "1.5A -> 1.5B".
 
-    Single-version labels like "1.5A" (single-sided dated updates) parse as
-    from-version only and sort as (1.5A, 1.5A).  Unparseable labels sort last.
+    Single-version labels like "1.5A" (single-sided dated updates) parse as from-version only and sort as (1.5A, 1.5A).  Unparseable labels sort last.
     """
     match = _LABEL_RE.match(label)
     if match is None:

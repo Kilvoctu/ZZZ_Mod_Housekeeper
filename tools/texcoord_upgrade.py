@@ -1,20 +1,7 @@
 """Upgrade face texcoord .buf files to the post-2.54 float32 format.
 
-Game 2.54 switched face texcoord records from 36 bytes (first component as
-four packed UNORM8 bytes) to 48 bytes (the same component as four float32
-values, byte / 255 — verified byte-exact against an author-shipped pair). Each
-upgrade rewrites the buffer and its Resource stride line together and records a
-marker in the store's "_texcoord_upgrades.json" so an interrupted run never
-re-converts. Body/hair texcoords keep the old stride, so upgrades gate on face
-hashes and a still-36 stride; dump data routes and cross-checks.
-
-Beyond that fixed rule, ``scan_v2_texcoord_targets`` uses v2 dump layouts to
-upgrade buffers of any declared stride: the live buffer's real per-vertex size
-is matched against the dump's ``texcoord_format`` by shrinking one '4f' block
-to packed bytes or half floats, and ``convert_bytes`` rewrites record by
-record — equal tokens pass through, only four-wide 4B/4e/4f pairs convert,
-anything else raises rather than guessing.  Format tokens are count+kind over
-the same table as tools.dumpdata ("4B" is 4 bytes, "4e" and "2f" are 8).
+Game 2.54 switched face texcoord records from 36 bytes (first component as four packed UNORM8 bytes) to 48 bytes (the same component as four float32 values, byte / 255 — verified byte-exact against an author-shipped pair); each upgrade rewrites the buffer and its Resource stride line together and records a marker in the store's "_texcoord_upgrades.json" so an interrupted run never re-converts, and body/hair texcoords keep the old stride, so upgrades gate on face hashes and a still-36 stride with dump data routing and cross-checking.
+Beyond that fixed rule, ``scan_v2_texcoord_targets`` uses v2 dump layouts to upgrade buffers of any declared stride: the live buffer's real per-vertex size is matched against the dump's ``texcoord_format`` by shrinking one '4f' block to packed bytes or half floats, and ``convert_bytes`` rewrites record by record — equal tokens pass through, only four-wide 4B/4e/4f pairs convert, anything else raises rather than guessing; format tokens are count+kind over the same table as tools.dumpdata ("4B" is 4 bytes, "4e" and "2f" are 8).
 """
 
 import json
@@ -61,9 +48,7 @@ class TexcoordTarget:
     """One face-texcoord buffer to upgrade, with the ini and override hash bound to it.
 
     Legacy 36 -> 48 targets keep the default strides and no format tokens; v2
-    targets carry the dump-inferred old tokens, the dump's new tokens, their
-    strides and a "char/comp" provenance source.
-    """
+    targets carry the dump-inferred old tokens, the dump's new tokens, their strides and a "char/comp" provenance source."""
 
     hash: str
     resource: str
@@ -102,9 +87,7 @@ def upgrade_bytes(data: bytes) -> bytes:
     """36-byte packed-UNORM8 face texcoord records -> 48-byte float32 records.
 
     The first four bytes of each record unpack to four little-endian float32
-    values (byte / 255.0); the remaining 32 bytes pass through unchanged.
-    Raises ValueError when the length is not a whole number of 36-byte records.
-    """
+    values (byte / 255.0), the remaining 32 bytes pass through unchanged; ValueError when the length is not a whole number of 36-byte records."""
     if len(data) % _OLD_STRIDE:
         raise ValueError(f"texcoord buffer is not {_OLD_STRIDE}-byte aligned: {len(data)}")
     out = bytearray(len(data) // _OLD_STRIDE * _NEW_STRIDE)
@@ -151,13 +134,8 @@ def convert_bytes(
 ) -> bytes:
     """Convert texcoord records from ``old_fmt`` to ``new_fmt``, block by block.
 
-    Both formats need the same block count and ``data`` a whole number of
-    old-stride records.  Equal tokens pass through byte-for-byte; supported
-    numeric conversions pair the 4-byte packed-UNORM8 block with float32 and
-    half16 and float32 with half16 (always four-wide); any other token change
-    raises rather than guessing.  Records land exactly on the new stride — a
-    wider new format zero-pads the tail bytes, a narrower one drops them.
-    """
+    Both formats need the same block count and ``data`` a whole number of old-stride records; equal tokens pass through byte-for-byte, supported numeric conversions pair the four-wide packed-UNORM8/float32/half16 blocks, and any other token change raises rather than guessing.
+    Records land exactly on the new stride — a wider new format zero-pads the tail bytes, a narrower one drops them."""
     if len(old_fmt) != len(new_fmt):
         raise ValueError("old_fmt and new_fmt must have the same block count")
     if not old_fmt:
@@ -189,10 +167,8 @@ def infer_old_formats(
 ) -> list[tuple[str, ...]]:
     """Old layouts fitting ``per_vertex``: each '4f' block shrunk to 4B then 4e.
 
-    Candidates are tried left-to-right by block position, '4B' before '4e'
-    within a position, and kept only when their stride equals the buffer's
-    real per-vertex byte size; empty when nothing matches.
-    """
+    Candidates are tried left-to-right by block position, '4B' before '4e' within
+    a position, and kept only when their stride equals the real per-vertex byte size; empty when nothing matches."""
     candidates: list[tuple[str, ...]] = []
     for index, token in enumerate(new_fmt):
         if token != "4f":
@@ -312,9 +288,7 @@ def find_targets(
     """Face-texcoord buffers bound by this ini's TextureOverride hashes.
 
     A target exists per Resource block whose variant-stripped name matches a
-    resource a face-texcoord-hash override binds, and whose block still declares
-    stride = 36.
-    """
+    resource a face-texcoord-hash override binds and that still declares stride = 36."""
     ini_dir = Path(ini_path).parent
     lines = _ini_lines(ini_text)
     blocks = _resource_blocks(lines)
@@ -456,12 +430,8 @@ def scan_v2_texcoord_targets(
 ) -> list[TexcoordTarget]:
     """Deduped v2 texcoord targets: dump-declared formats over any-stride blocks.
 
-    Each face-hash override binding a Resource block pairs with the v2 dump
-    whose ``texcoord_vb`` equals the hash; the live buffer's real per-vertex
-    size must then infer to a convertible old layout (never the dump's own
-    stride, never the legacy 36).  Missing or unusable buffers are skipped
-    silently.
-    """
+    Each face-hash override binding a Resource block pairs with the v2 dump whose ``texcoord_vb`` equals the hash; the live buffer's real per-vertex size must then infer to a convertible old layout (never the dump's own stride, never the legacy 36).
+    Missing or unusable buffers are skipped silently."""
     targets: list[TexcoordTarget] = []
     seen: set[tuple[str, str]] = set()
     for ini in included_ini_files(Path(folder)):
@@ -605,8 +575,7 @@ def _record_upgrade(
     """Back up the live bytes, write ``new`` and record one upgrade marker.
 
     ``live`` is the pre-write buffer content; None when the buffer was absent,
-    so nothing is backed up.  Returns the backup file name or None.
-    """
+    so nothing is backed up; returns the backup file name or None."""
     stamp = int(time.time() * 1000)
     destination = None
     if backup and live is not None:
@@ -636,10 +605,8 @@ def _apply_format_upgrade(
 ) -> bool:
     """Convert one v2 target's buffer to its dump-declared format; True when written.
 
-    There is no restore source for a v2 buffer, so a missing file only logs;
-    an existing buffer is converted block-by-block from the target's inferred
-    old tokens to the dump's new tokens.
-    """
+    There is no restore source for a v2 buffer, so a missing file only logs; an
+    existing buffer is converted block-by-block from the target's inferred old tokens to the dump's new tokens."""
     fmt_old = target.fmt_old
     fmt_new = target.fmt_new
     if fmt_old is None or fmt_new is None:
@@ -697,15 +664,8 @@ def apply_upgrade(
 ) -> bool:
     """Upgrade one face-texcoord buffer and its Resource stride line; True when written.
 
-    Idempotent: once the marker's after-hash matches the live buffer, only a
-    still-old stride line is completed; a buffer that is not aligned to the
-    target's old stride is skipped with a log line.  V2 targets (``fmt_new``
-    set) convert block-by-block via their dump-declared formats with no dump
-    restore path.  Legacy targets route through dump data: a hash matched in
-    the dump restores or cross-checks the dump's current texcoord binary and a
-    missing buffer is restored from it; without a dump the conversion is
-    unverified.
-    """
+    Idempotent: once the marker's after-hash matches the live buffer only a still-old stride line is completed, and a buffer not aligned to the target's old stride is skipped with a log line; v2 targets (``fmt_new`` set) convert block-by-block via their dump-declared formats with no dump restore path.
+    Legacy targets route through dump data: a hash matched in the dump restores or cross-checks the dump's current texcoord binary (a missing buffer is restored from it); without a dump the conversion is unverified."""
     mods_dir = Path(mods_dir)
     buf_path = Path(target.path)
     if target.fmt_new is not None:
@@ -814,11 +774,8 @@ def apply_upgrade(
 def marker_kind(store_dir: Path, mods_dir: Path, live_path: Path) -> str | None:
     """Fix-kind annotation for a live buffer from its upgrade marker; None without one.
 
-    "dump restore" marks a buffer whose bytes came verbatim from a fix-tool
-    dump, "buffer conversion" a genuinely converted one; a legacy marker
-    without an "action" field predates the distinction and counts as a
-    conversion.
-    """
+    "dump restore" marks a buffer whose bytes came verbatim from a fix-tool dump,
+    "buffer conversion" a genuinely converted one; a legacy marker without an "action" field predates the distinction and counts as a conversion."""
     marker = load_texcoord_state(store_dir, mods_dir).get(
         _state_key(mods_dir, live_path)
     )
@@ -832,12 +789,8 @@ def prune_texcoord_markers(
 ) -> int:
     """Drop upgrade markers of buffers a revert put back to pre-upgrade bytes.
 
-    A marker is dropped when its live .buf exists again with exactly the
-    content the marker's "before" hash recorded, i.e. nothing converted
-    remains on disk; non-.buf paths are ignored and unreadable live files
-    are skipped.  The state file is rewritten at most once, only when
-    something was dropped; returns the dropped count.
-    """
+    A marker is dropped when its live .buf exists again with exactly the content the marker's "before" hash recorded (nothing converted remains on disk); non-.buf paths are ignored and unreadable live files are skipped.
+    The state file is rewritten at most once, only when something was dropped; returns the dropped count."""
     state = load_texcoord_state(store_dir, mods_dir)
     if not state:
         return 0

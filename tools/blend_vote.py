@@ -1,23 +1,7 @@
 """Derive an old→new blend-index map by voting over position-matched records.
 
-Bone indices drift between game versions: a mod authored against an older
-skeleton still carries the old bone numbering, while a dump of the same mesh
-uses the new one. Matching each mod vertex's position record to a dump vertex
-pairs the vertices, and comparing each pair's blend records casts one old→new
-vote per disagreeing index slot.
-
-The derivation refuses to guess: derive_blend_vote_map() returns an empty map
-with a refused report unless strict alignment, count, ambiguity, consistency,
-injectivity, and match-rate gates all pass, and it never writes anything.
-Subdivided or edited meshes refuse that strict pairing, so a target may also
-carry the component's v2 mesh dump: derive_grid_vote_map() then pairs mod and
-dump vertices by a 0.010-unit spatial-grid radius instead, votes over
-weight-ranked blend slots, and resolves the votes greedily one-to-one — a
-tolerant fallback whose marker records the "grid" action.
-scan_blend_vote_targets() pairs the same buffers in mod .inis against
-dump-covered components (skipping hashes the table-driven remap owns);
-apply_blend_vote_remap() rewrites the blend buffer from a voted map and
-records a marker in the shared "_blend_remaps.json" used by the table pass.
+Bone indices drift between game versions: a mod authored against an older skeleton still carries the old bone numbering, while a dump of the same mesh uses the new one; matching each mod vertex's position record to a dump vertex pairs the vertices, and comparing each pair's blend records casts one old→new vote per disagreeing index slot. The derivation refuses to guess: derive_blend_vote_map() returns an empty map with a refused report unless strict alignment, count, ambiguity, consistency, injectivity, and match-rate gates all pass, and it never writes anything.
+Subdivided or edited meshes refuse that strict pairing, so a target may also carry the component's v2 mesh dump: derive_grid_vote_map() then pairs mod and dump vertices by a 0.010-unit spatial-grid radius instead, votes over weight-ranked blend slots, and resolves the votes greedily one-to-one — a tolerant fallback whose marker records the "grid" action. scan_blend_vote_targets() pairs the same buffers in mod .inis against dump-covered components (skipping hashes the table-driven remap owns); apply_blend_vote_remap() rewrites the blend buffer from a voted map and records a marker in the shared "_blend_remaps.json" used by the table pass.
 """
 
 import os
@@ -67,11 +51,7 @@ _FILENAME_LINE_RE = re.compile(r"^filename ?= ?(?P<file>.+)$", re.IGNORECASE)
 class VoteReport:
     """Outcome of one derivation attempt.
 
-    ``total`` is the mod vertex count, ``matched``/``unmatched``/``ambiguous``
-    partition it by how each mod vertex's position record was found in the dump.
-    ``conflicts`` maps an old index to the disagreeing new indices it was voted
-    to (empty when ``ok``). ``map`` carries the derived old→new indices only
-    when ``ok``; ``refusal`` is "" when ``ok``, else a short reason.
+    ``total`` is the mod vertex count, ``matched``/``unmatched``/``ambiguous`` partition it by how each mod vertex's position record was found in the dump. ``conflicts`` maps an old index to the disagreeing new indices it was voted to (empty when ``ok``); ``map`` carries the derived old→new indices only when ``ok``; ``refusal`` is "" when ``ok``, else a short reason.
     """
 
     ok: bool
@@ -115,8 +95,7 @@ def _vertex_count(buffer: bytes, stride: int) -> int | None:
 def _record_index(dump_position: bytes, count: int) -> dict[bytes, list[int]]:
     """Dump vertex indices keyed by their full 40-byte position record.
 
-    Records appearing on several dump vertices keep every occurrence, so the
-    caller can detect ambiguity instead of guessing a partner.
+    Records appearing on several dump vertices keep every occurrence, so the caller can detect ambiguity instead of guessing a partner.
     """
     index: dict[bytes, list[int]] = {}
     for vertex in range(count):
@@ -154,13 +133,7 @@ def derive_blend_vote_map(
 ) -> tuple[dict[int, int], VoteReport]:
     """(map, report) voted from position-matched blend records; ({}, refusal) when the derivation refuses.
 
-    ``mod_blend``/``dump_blend`` hold stride-32 blend records (4 float32
-    weights then 4 little-endian uint32 bone indices); ``mod_position``/
-    ``dump_position`` hold stride-40 position records of the same mesh on both
-    sides. The map is empty when a strict gate fails: a stride-misaligned
-    length, mismatched mod/dump vertex counts, zero vertices, a mod record
-    matching several dump records (ambiguous), an old index voted to several
-    new indices, a non-injective result, or a match rate below 0.99.
+    ``mod_blend``/``dump_blend`` hold stride-32 blend records (4 float32 weights then 4 little-endian uint32 bone indices) and ``mod_position``/``dump_position`` hold stride-40 position records of the same mesh on both sides. The map is empty when a strict gate fails: a stride-misaligned length, mismatched mod/dump vertex counts, zero vertices, a mod record matching several dump records (ambiguous), an old index voted to several new indices, a non-injective result, or a match rate below 0.99.
     """
     (mod_count, mod_positions, dump_count, dump_positions), refusal = (
         _aligned_vertex_counts(mod_blend, mod_position, dump_blend, dump_position)
@@ -280,9 +253,7 @@ def derive_blend_vote_map(
 def _resolve_grid_votes(votes: dict[int, dict[int, int]]) -> dict[int, int]:
     """One-to-one old→new map picked greedily by descending vote count.
 
-    Mirrors the upstream resolve: the flat (old, new) votes sort by count
-    descending (stable, so equal counts keep first-seen order) and a vote is
-    assigned only when both its old and its new index are still unassigned.
+    Mirrors the upstream resolve: the flat (old, new) votes sort by count descending (stable, so equal counts keep first-seen order) and a vote is assigned only when both its old and its new index are still unassigned.
     """
     flat = [
         ((old, new), count)
@@ -304,21 +275,8 @@ def derive_grid_vote_map(
     mod_position: bytes, mod_blend: bytes, dump: V2Dump
 ) -> tuple[dict[int, int], VoteReport]:
     """(map, report) voted over radius-paired mod/dump vertices; ({}, refusal) when the grid path refuses.
-
-    Tolerant fallback for subdivided or edited meshes the strict derivation
-    refuses: ``dump`` is the component's v2 mesh dump whose ``vertices()``
-    supply the dump-side positions and ``(weights, indices)`` blend records.
-    Mod vertices land in a spatial grid of ``_GRID_RADIUS``-sized cells keyed
-    by ``floor(coord / radius)``; every dump vertex keeps at most
-    ``_GRID_MAX_K`` nearest in-radius mod vertices and each pair votes per
-    weight-ranked slot when both weights reach ``_GRID_WEIGHT_MIN``, differ by
-    at most ``_GRID_WEIGHT_EPS``, and the indices differ, once per old index
-    within the pair. Refusals: stride-misaligned mod buffers, mismatched mod
-    blend/position counts, zero mod vertices, a dump without blend data, no
-    pair at all, or a matched ratio below ``_GRID_MIN_RATIO``. Conflicting
-    votes resolve greedily one-to-one (``_resolve_grid_votes``), so the result
-    is always injective; an identity result — only the empty map, since equal
-    indices never vote — comes back ok with an empty map.
+    Tolerant fallback for subdivided or edited meshes the strict derivation refuses: ``dump`` is the component's v2 mesh dump whose ``vertices()`` supply the dump-side positions and ``(weights, indices)`` blend records. Mod vertices land in a spatial grid of ``_GRID_RADIUS``-sized cells keyed by ``floor(coord / radius)``; every dump vertex keeps at most ``_GRID_MAX_K`` nearest in-radius mod vertices and each pair votes per weight-ranked slot when both weights reach ``_GRID_WEIGHT_MIN``, differ by at most ``_GRID_WEIGHT_EPS``, and the indices differ, once per old index within the pair.
+    Refusals: stride-misaligned mod buffers, mismatched mod blend/position counts, zero mod vertices, a dump without blend data, no pair at all, or a matched ratio below ``_GRID_MIN_RATIO``. Conflicting votes resolve greedily one-to-one (``_resolve_grid_votes``), so the result is always injective; an identity result — only the empty map, since equal indices never vote — comes back ok with an empty map.
     """
     if len(mod_blend) % _BLEND_STRIDE:
         return {}, _refusal_report(
@@ -474,8 +432,7 @@ def derive_grid_vote_map(
 class BlendVoteTarget:
     """One blend .buf to vote-remap, with its bound position buffer and dump sources.
 
-    ``grid`` optionally carries the component's v2 mesh dump backing the
-    tolerant spatial-grid fallback when the strict derivation refuses.
+    ``grid`` optionally carries the component's v2 mesh dump backing the tolerant spatial-grid fallback when the strict derivation refuses.
     """
 
     hash: str
@@ -521,10 +478,7 @@ def _resource_header_name(line: str) -> str | None:
 def _scan_sections(lines: list[str]) -> list[_IniSection]:
     """One pass over the ini lines recording every [...] section it opens.
 
-    Each section keeps its first ``hash =`` line and first ``vb0``/``vb2``
-    Resource binds; ``[Resource…]`` sections additionally keep whether a
-    ``type = Buffer`` line appeared and their first ``stride``/``filename``
-    values, in either order.
+    Each section keeps its first ``hash =`` line and first ``vb0``/``vb2`` Resource binds; ``[Resource…]`` sections additionally keep whether a ``type = Buffer`` line appeared and their first ``stride``/``filename`` values, in either order.
     """
     sections: list[_IniSection] = []
     name = ""
@@ -623,9 +577,7 @@ def _file_vertex_count(path: Path, stride: int) -> int | None:
 def _dump_key2_for_hash(dumps: DumpData, section_hash: str) -> tuple[str, str] | None:
     """(char, comp) a section hash resolves to: by index buffer, else by role hash.
 
-    The dump's index-buffer hash identifies the mesh first; otherwise the
-    first sorted position/blend component whose current hash matches wins.
-    None when the dump covers the hash neither way.
+    The dump's index-buffer hash identifies the mesh first; otherwise the first sorted position/blend component whose current hash matches wins. None when the dump covers the hash neither way.
     """
     value = section_hash.lower()
     ib_matches = sorted(key2 for key2, ib in dumps.ibs.items() if ib == value)
@@ -653,12 +605,7 @@ def _vote_targets_in_ini(
 ) -> list[BlendVoteTarget]:
     """Vote targets from one ini's draw sections pairing position and blend buffers.
 
-    A section is skipped unless the dump covers its hash and both buffers align
-    to their strides and match the dump's vertex counts; shipped-table hashes
-    belong to the table-driven pass. Count-mismatched sections still vote when
-    the component's v2 mesh dump carries vertex data — the target then carries
-    it as the ``grid`` fallback, which count-matching targets attach too when
-    available.
+    A section is skipped unless the dump covers its hash and both buffers align to their strides and match the dump's vertex counts; shipped-table hashes belong to the table-driven pass. Count-mismatched sections still vote when the component's v2 mesh dump carries vertex data — the target then carries it as the ``grid`` fallback, which count-matching targets attach too when available.
     """
     ini_dir = Path(ini_path).parent
     sections = _scan_sections(_ini_lines(ini_text))
@@ -754,12 +701,7 @@ def apply_blend_vote_remap(
 ) -> bool:
     """Vote-remap one blend buffer once from the dump; True only when indices changed.
 
-    Idempotent like apply_remap: when the store marker's after-hash already
-    matches the live buffer nothing is read further, written, or logged. The
-    strict derivation runs first; when it refuses and the target carries a v2
-    mesh dump, the spatial-grid derivation retries and the marker records the
-    "grid" action. The marker lands in the shared "_blend_remaps.json" before
-    the buffer write.
+    Idempotent like apply_remap: when the store marker's after-hash already matches the live buffer nothing is read further, written, or logged. The strict derivation runs first; when it refuses and the target carries a v2 mesh dump, the spatial-grid derivation retries and the marker records the "grid" action. The marker lands in the shared "_blend_remaps.json" before the buffer write.
     """
     mods_dir = Path(mods_dir)
     blend_path = Path(target.blend_path)

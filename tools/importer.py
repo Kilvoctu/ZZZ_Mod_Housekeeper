@@ -61,10 +61,7 @@ def _merge_staging(
     """Merge a staged extraction tree into destination; return files written.
 
     Applies the extract_zip layout rules: unsafe/junk members dropped, a
-    multi-top tree wrapped under ``stem``, existing files skipped (logged
-    when given) unless ``replace``.  Files are moved with os.replace, so a
-    same-volume staging tree costs no extra read/write pass.
-    """
+    multi-top tree wrapped under ``stem``, existing files skipped (logged when given) unless ``replace``; files are moved with os.replace, so a same-volume staging tree costs no extra read/write pass."""
     members: list[str] = []
     for dirpath, _dirnames, filenames in os.walk(staging):
         for filename in filenames:
@@ -135,11 +132,8 @@ def _extract_external(
 ) -> int:
     """Extract a rar/7z archive via 7-Zip or WinRAR into a staging tree.
 
-    Staging is created on the destination's volume so the merge is an
-    atomic rename instead of a cross-drive copy.  Layout rules match
-    extract_zip (junk dropped, single-top kept, no overwrite unless
-    replace).  Returns the number of files written.
-    """
+    Staging is created on the destination's volume so the merge is an atomic
+    rename instead of a cross-drive copy; layout rules match extract_zip (junk dropped, single-top kept, no overwrite unless replace) and the return value is the number of files written."""
     tool = _find_extractor()
     if tool is None:
         raise RuntimeError(
@@ -176,10 +170,8 @@ def extract_zip(
 ) -> int:
     """Extract one mod zip archive under destination; return files written.
 
-    Existing files are skipped (logged when given) unless ``replace``;
-    unsafe and junk members are dropped.  Raises zipfile.BadZipFile for
-    non-zip input.
-    """
+    Existing files are skipped (logged when given) unless ``replace``; unsafe and
+    junk members are dropped; raises zipfile.BadZipFile for non-zip input."""
     members: list[tuple[str, zipfile.ZipInfo]] = []
     with zipfile.ZipFile(archive) as opened:
         for info in opened.infolist():

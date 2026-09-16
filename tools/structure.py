@@ -38,8 +38,7 @@ def comp_latin(name: str, is_weapon: bool) -> str:
     """ASCII slug used in section titles for one component.
 
     Weapon components all render as "weapon"; non-weapon components use the
-    ASCII part of the first dash-separated token, e.g. "Face-脸" -> "Face".
-    """
+    ASCII part of the first dash-separated token, e.g. "Face-脸" -> "Face"."""
     if is_weapon:
         return "weapon"
     token = name.split("-", 1)[0]
@@ -51,8 +50,7 @@ def _component_textures(component: Component) -> list[tuple[str, str]]:
     """Flatten a component's texture_hashes into [(role, hash)] triples.
 
     The JSON nests empty/one-element arrays; a leaf is a list of three
-    strings ``[role, extension, hash]``.  Deduplicates identical triples.
-    """
+    strings ``[role, extension, hash]``.  Deduplicates identical triples."""
     out: list[tuple[str, str]] = []
     seen: set[tuple[str, str]] = set()
     for role, hash_value in iter_texture_triples(component.texture_hashes):
@@ -91,8 +89,7 @@ class AnchorRule:
     """Rule B: add an IB-anchor section when this hash is present and the IB is missing.
 
     ``for_hash`` triggers when present; ``ib`` is the section hash to gate on
-    and write, with the gate expanded by the chain-alias set at scan time.
-    """
+    and write, with the gate expanded by the chain-alias set at scan time."""
 
     for_hash: str
     ib: str
@@ -118,8 +115,7 @@ class MultiplyRule:
     """Rule C: duplicate a texture section for the sibling resolution.
 
     ``section_title``'s letter suffix (``HairA``/``HairB``/...) encodes the
-    matched slot's 1-based ordinal among the same-role slots.
-    """
+    matched slot's 1-based ordinal among the same-role slots."""
 
     for_hash: str
     counterpart: str
@@ -196,8 +192,7 @@ def _merge_texture_slots(
     """Merge one variant's texture pairs into the cross-variant slots.
 
     Slots are aligned by (role, ordinal), so the same logical texture across
-    variants shares one TextureSlot holding one hash per variant.
-    """
+    variants shares one TextureSlot holding one hash per variant."""
     existing = target.textures
     by_role: dict[str, list[TextureSlot]] = {}
     for slot in existing:
@@ -219,8 +214,7 @@ def build_chain_aliases(pairs: Iterable[tuple[str, str]]) -> dict[str, frozenset
     """Map every hash to the other members of its changelog chain component.
 
     Chains are undirected, so a historical or later hash that appears in the
-    mod is treated as the same value for gating.
-    """
+    mod is treated as the same value for gating."""
     unions: dict[str, set[str]] = {}
     for left_raw, right_raw in pairs:
         left = left_raw.lower()
@@ -242,8 +236,7 @@ def build_structure(
     """Build the structural rules from every variant's character table.
 
     ``dbs`` maps a variant key (e.g. "2048p") to its parsed CharacterDB;
-    ``chain_pairs`` feeds the chain-alias gate expansion with changelog hash pairs.
-    """
+    ``chain_pairs`` feeds the chain-alias gate expansion with changelog hash pairs."""
     variants = tuple(variants or dbs)
     merged: dict[tuple[str, str], ComponentFacts] = {}
     by_hash: dict[str, list[tuple[str, tuple[str, str], str]]] = {}
@@ -456,8 +449,7 @@ def _sibling(
     """The sibling resolution of one texture slot, if any.
 
     Returns ``(other_hash, other_res, ordinal)``, with ``ordinal`` the 1-based
-    index of the matched slot among the same-role slots.
-    """
+    index of the matched slot among the same-role slots."""
     ordinal = 0
     for slot in facts.textures:
         if slot.role != role:
@@ -479,8 +471,7 @@ def _primary_resolution(
     """The resolution a shared hash belongs to for one character ("2048"/"1024").
 
     Most characters use the 2048p shared NormalMap hash; a few low-varm-era
-    tables reference the 1024p hash in their own components.
-    """
+    tables reference the 1024p hash in their own components."""
     for facts in merged.values():
         if facts.char != char:
             continue

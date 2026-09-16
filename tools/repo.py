@@ -40,10 +40,8 @@ class RepoError(RuntimeError):
 class RepoVariant:
     """One upstream data-repo variant.
 
-    ``hash`` kinds ship the hash datasets (changelog + character tables);
-    the ``dump`` kind ships the fix-tool vertex dumps, extracted into the
-    cache root with the v2 tool's dumps under ``v2``.
-    """
+    ``hash`` kinds ship the hash datasets (changelog + character tables); the
+    ``dump`` kind ships the fix-tool vertex dumps, extracted into the cache root with the v2 tool's dumps under ``v2``."""
 
     key: str
     repo_url: str
@@ -103,9 +101,8 @@ def changelog_path(repo_dir: Path) -> Path:
 def characters_dir(repo_dir: Path) -> Path:
     """Return the per-character JSON directory inside the repo, auto-detected.
 
-    The 2048p repo ships 角色hash表 and the 1024p repo ships 角色hash表低显;
-    the standard name wins when both exist.  Raises ValueError when neither exists.
-    """
+    The 2048p repo ships 角色hash表 and the 1024p repo ships 角色hash表低显; the
+    standard name wins when both exist, and ValueError is raised when neither exists."""
     standard = repo_dir / CHARACTERS_DIR_NAME
     if standard.is_dir():
         return standard
@@ -126,9 +123,7 @@ def ensure_repo(
     """Ensure a local copy of the variant's data repo exists and is up to date.
 
     Existing copies are refreshed from the upstream archive (an ETag check skips
-    redundant downloads); an unrefreshable copy is kept as-is, and only a failed
-    first download raises RepoError.
-    """
+    redundant downloads); an unrefreshable copy is kept as-is, and only a failed first download raises RepoError."""
     target = Path(cache_dir) if cache_dir is not None else default_cache_dir(variant)
     info = REPO_VARIANTS[variant]
     if target.is_dir() and (target / _MARKER_NAME).is_file():
@@ -166,8 +161,7 @@ def repo_update_available(
     """Whether the upstream repo has commits the local copy lacks.
 
     True when the upstream ETag differs from the cached one (including nothing
-    fetched yet), False when both agree, None when the check could not run.
-    """
+    fetched yet), False when both agree, None when the check could not run."""
     target = Path(cache_dir) if cache_dir is not None else default_cache_dir(variant)
     if not (target.is_dir() and (target / _MARKER_NAME).is_file()):
         return True
@@ -196,8 +190,7 @@ def _download_archive(variant: str, target: Path) -> None:
     """Download and unpack the variant's tip archive into ``target``.
 
     Dump-kind variants additionally extract the v2 tool's ``Dump`` subfolder
-    under ``<target>/v2``, skipping its per-mesh index-dump text files.
-    """
+    under ``<target>/v2``, skipping its per-mesh index-dump text files."""
     staging = Path(
         tempfile.mkdtemp(prefix=f"{target.name}-staging-", dir=str(target.parent))
     )
@@ -267,11 +260,8 @@ def _extract_archive(
 ) -> None:
     """Unpack a GitHub zip archive, dropping its single top-level folder.
 
-    With ``subfolder``, only members under ``<top>/<subfolder>/`` are unpacked
-    and their paths are rebased so the subfolder's contents land in the
-    destination root.  With ``exclude``, members whose rebased relative path
-    is rejected are skipped.
-    """
+    With ``subfolder``, only members under ``<top>/<subfolder>/`` are unpacked and
+    their paths are rebased so the subfolder's contents land in the destination root; with ``exclude``, members whose rebased relative path is rejected are skipped."""
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         members = zf.namelist()
         if not members:
