@@ -121,6 +121,7 @@ from ..backups import (
     store_folder_to_open,
 )
 from ..blend_remap import blend_marker_kind
+from ..claims import ClaimConflict, compute_claim_conflicts
 from ..fixer import STRUCTURAL_KINDS, FixerData, empty_fixer_data, read_ini_text
 from ..modinfo import read_mod_author, scan_mod_info
 from ..mods import (
@@ -167,6 +168,7 @@ from .worker import (
     TaskWorker,
     analyze_worker,
     apply_preset_worker,
+    autofix_conflicts_worker,
     backup_chains_worker,
     check_updates_worker,
     delete_folder_worker,
@@ -176,6 +178,7 @@ from .worker import (
     rename_folder_worker,
     revert_worker,
     scope_analyze_worker,
+    undo_defer_worker,
     update_data_worker,
 )
 
@@ -203,6 +206,39 @@ _DWMWCP_ROUND = 2
 
 def _display_name(node: ModNode) -> str:
     return node.name.removeprefix(_DISABLED_PREFIX)
+
+
+def _toggle_flip(old_name: str, new_name: str) -> str | None:
+    """Classify a rename as a mod enable/disable flip; None for plain renames."""
+    was_disabled = old_name.startswith(_DISABLED_PREFIX)
+    now_disabled = new_name.startswith(_DISABLED_PREFIX)
+    if was_disabled == now_disabled:
+        return None
+    return "disable" if now_disabled else "enable"
+
+
+def _autofix_summary(result: Mapping[str, object]) -> str:
+    """One-line log for a finished conflict auto-resolve (per mod or all mods)."""
+    edits = result.get("edits")
+    if not isinstance(edits, int) or edits <= 0:
+        return "no mod conflicts to auto-resolve"
+    pairs = result.get("pairs")
+    files = result.get("files")
+    pair_text = (
+        ", ".join(str(pair) for pair in pairs) if isinstance(pairs, list) else ""
+    )
+    file_count = len(files) if isinstance(files, list) else 0
+    return (
+        f"auto-resolved conflict(s): {pair_text} — {edits} edit(s) "
+        f"across {file_count} file(s), backups taken"
+    )
+
+
+def _undo_summary(name: str, count: int) -> str:
+    """One-line log for a finished auto-fix undo of one mod's edits."""
+    if count > 0:
+        return f"auto-fix undone for '{name}': {count} edit(s)"
+    return f"no auto-fixes to undo for '{name}'"
 
 
 def _enabled_view_includes(node: ModNode) -> bool:
@@ -925,6 +961,7 @@ class _ModInfoDialog(QDialog):
     """Read-only key-toggle summary of a mod."""
 
     _warnings_ready = Signal(object)
+    _claims_ready = Signal(object)
 
     def __init__(
         self,
@@ -987,6 +1024,7 @@ class _ModInfoDialog(QDialog):
             rows_layout.addStretch(1)
             self._rows_layout = rows_layout
             self._warnings_ready.connect(self._on_warnings_ready)
+            self._claims_ready.connect(self._on_claims_ready)
             self._warnings_thread = threading.Thread(
                 target=self._compute_warnings,
                 args=(mod_dir, mods_root),
@@ -1023,11 +1061,45 @@ class _ModInfoDialog(QDialog):
             row.setWordWrap(True)
             layout.addWidget(row)
 
+    def _add_claim_diagnostics(
+        self,
+        layout: QVBoxLayout,
+        conflicts: Sequence[ClaimConflict],
+    ) -> None:
+        """Append a divider, the claim-conflicts header, and one row per conflict below existing rows."""
+        if not conflicts:
+            return
+        if layout.count() > 0:
+            divider = QFrame()
+            divider.setFrameShape(QFrame.Shape.HLine)
+            divider.setFrameShadow(QFrame.Shadow.Sunken)
+            layout.addWidget(divider)
+        header = QLabel("Claim diagnostics")
+        header_palette = header.palette()
+        header_palette.setColor(
+            QPalette.ColorRole.Mid, _dimmed_color(header_palette, 0.4)
+        )
+        header.setPalette(header_palette)
+        header.setForegroundRole(QPalette.ColorRole.Mid)
+        layout.addWidget(header)
+        for conflict in conflicts:
+            row = QLabel(conflict.text)
+            row.setWordWrap(True)
+            layout.addWidget(row)
+
     def _compute_warnings(self, mod_dir: Path, mods_root: Path) -> None:
-        """Compute the toggle warnings off the GUI thread and emit them."""
+        """Compute the toggle warnings and claim conflicts off the GUI thread and emit them."""
         warnings = compute_mod_toggle_warnings(mod_dir, mods_root)
         try:
             self._warnings_ready.emit(warnings)
+        except RuntimeError:
+            return
+        if mods_root is None or not str(mods_root):
+            return
+        try:
+            self._claims_ready.emit(
+                compute_claim_conflicts(str(mods_root), str(mod_dir))
+            )
         except RuntimeError:
             return
 
@@ -1078,6 +1150,21 @@ class _ModInfoDialog(QDialog):
                 if isinstance(item, QSpacerItem):
                     layout.removeItem(item)
             self._add_toggle_diagnostics(layout, list(warnings))
+            layout.addStretch(1)
+
+    def _on_claims_ready(self, conflicts: object) -> None:
+        """Insert the computed claim rows above the trailing stretch, keeping it last."""
+        if self._dialog_closed:
+            return
+        if not isinstance(conflicts, list):
+            return
+        layout = self._rows_layout
+        if layout is not None:
+            if layout.count() > 0:
+                item = layout.itemAt(layout.count() - 1)
+                if isinstance(item, QSpacerItem):
+                    layout.removeItem(item)
+            self._add_claim_diagnostics(layout, list(conflicts))
             layout.addStretch(1)
 
     def done(self, result: int) -> None:
@@ -2448,12 +2535,14 @@ class MainWindow(QMainWindow):
         self._structure: StructureData | None = None
         self._worker: TaskWorker | None = None
         self._fixing_name = ""
+        self._undo_name = ""
         self._fixing_node: ModNode | None = None
         self._scope_refresh_node: ModNode | None = None
         self._node_items: dict[int, QTreeWidgetItem] = {}
         self._check_worker: TaskWorker | None = None
         self._update_statuses: dict[str, bool | None] | None = None
         self._loaded_via_update = False
+        self._startup_sweep_pending = True
         self._filling_tree = False
         self._check_retry_timer = QTimer(self)
         self._check_retry_timer.setSingleShot(True)
@@ -2485,6 +2574,9 @@ class MainWindow(QMainWindow):
         self._show_empty_folders = show_empty_setting in (True, "true")
         self._show_enabled_only = self._settings.value("show_enabled_only", False) in (True, "true")
         self._show_console = self._settings.value("show_console", True) in (True, "true")
+        self._auto_resolve_conflicts = self._settings.value(
+            "auto_resolve_conflicts", True
+        ) in (True, "true")
         self._build_ui()
         if sys.platform == "win32":
             try:
@@ -2646,6 +2738,10 @@ class MainWindow(QMainWindow):
         show_console.setCheckable(True)
         show_console.setChecked(self._show_console)
         show_console.toggled.connect(self._on_show_console_toggled)
+        auto_resolve = menu.addAction("Auto-resolve mod conflicts")
+        auto_resolve.setCheckable(True)
+        auto_resolve.setChecked(self._auto_resolve_conflicts)
+        auto_resolve.toggled.connect(self._on_auto_resolve_toggled)
         about = menu.addAction("About")
         about.triggered.connect(self._show_about)
 
@@ -2879,6 +2975,12 @@ class MainWindow(QMainWindow):
         self._log_view.setVisible(checked)
         self._settings.setValue("show_console", checked)
 
+    def _on_auto_resolve_toggled(self, checked: bool) -> None:
+        """Persist the auto-resolve preference and log the new state."""
+        self._auto_resolve_conflicts = checked
+        self._settings.setValue("auto_resolve_conflicts", checked)
+        self.append_log("auto-resolve enabled" if checked else "auto-resolve disabled")
+
     def _open_mods_folder(self) -> None:
         """Open the current mods folder in the system file manager."""
         mods_dir = self._mods_edit.text().strip()
@@ -2990,8 +3092,12 @@ class MainWindow(QMainWindow):
                 self.append_log(pending)
             self.append_log(line)
             self._last_analysis_line = line
+        startup_sweep = self._startup_sweep_pending
+        self._startup_sweep_pending = False
         self._prompt_missing_mods(previous_root, previous_mods_path)
         self._rebuild_presets_menu()
+        if startup_sweep:
+            QTimer.singleShot(0, self._start_startup_autofix_sweep)
 
     def _prompt_missing_mods(
         self, previous_root: ModNode | None, previous_mods_path: Path | None
@@ -3239,6 +3345,19 @@ class MainWindow(QMainWindow):
         self._start_worker(
             analyze_worker(mods_dir, datasets, self._structure),
             self._on_analyze_done,
+        )
+
+    def _start_startup_autofix_sweep(self) -> None:
+        """One all-mods conflict auto-resolve pass after the startup analyze."""
+        if not self._auto_resolve_conflicts:
+            return
+        if self._worker is not None:
+            self.append_log("startup auto-fix sweep skipped (busy)")
+            return
+        mods_dir = Path(self._mods_edit.text().strip())
+        self._start_worker(
+            autofix_conflicts_worker(mods_dir, default_backups_dir(), mod_name=None),
+            partial(self._on_autofix_done, refresh=False),
         )
 
     def _restore_last_folder(self) -> bool:
@@ -3633,6 +3752,7 @@ class MainWindow(QMainWindow):
                 1, Qt.CheckState.Unchecked if node.disabled else Qt.CheckState.Checked
             )
         else:
+            old_name = node.name
             node.name = new_path.name
             node.disabled = not desired_enabled
             item.setText(0, _display_name(node))
@@ -3641,7 +3761,12 @@ class MainWindow(QMainWindow):
             )
             retarget_subtree_paths(node, new_path)
             self._fixing_node = node
-            if self._show_enabled_only and not desired_enabled:
+            flip = _toggle_flip(old_name, node.name)
+            refill = self._show_enabled_only and not desired_enabled
+            if flip is not None and self._auto_resolve_conflicts:
+                self._start_flip_autofix(node, flip, refill=refill)
+                return
+            if refill:
                 QTimer.singleShot(0, self._deferred_disabled_refill)
             else:
                 QTimer.singleShot(0, self._deferred_scope_refresh)
@@ -3816,6 +3941,7 @@ class MainWindow(QMainWindow):
         self._renaming_node = None
         if not isinstance(result, Path) or node is None:
             return
+        old_name = node.name
         node.name = result.name
         node.disabled = node.name.startswith(_DISABLED_PREFIX)
         retarget_subtree_paths(node, result)
@@ -3823,7 +3949,62 @@ class MainWindow(QMainWindow):
         if item is not None:
             item.setText(0, _display_name(node))
         self._fixing_node = node
+        flip = _toggle_flip(old_name, node.name) if node.kind == "mod" else None
+        if flip is not None and self._auto_resolve_conflicts:
+            QTimer.singleShot(0, partial(self._start_flip_autofix, node, flip))
+            return
         QTimer.singleShot(0, self._deferred_scope_refresh)
+
+    def _start_flip_autofix(
+        self, node: ModNode, flip: str, refill: bool = False
+    ) -> None:
+        """Auto-resolve conflicts for an enabled mod, or undo them for a disabled one.
+
+        The scope refresh (and enabled-only refill) is chained from the worker's
+        done-handler so it never collides with the busy gate."""
+        if self._worker is not None:
+            self.append_log("auto-fix skipped (busy)")
+            deferred = (
+                self._deferred_disabled_refill
+                if refill
+                else self._deferred_scope_refresh
+            )
+            QTimer.singleShot(0, deferred)
+            return
+        mods_dir = Path(self._mods_edit.text().strip())
+        store_dir = default_backups_dir()
+        name = _display_name(node)
+        if flip == "enable":
+            self._start_worker(
+                autofix_conflicts_worker(mods_dir, store_dir, mod_name=name),
+                self._on_autofix_done,
+            )
+            return
+        self._undo_name = name
+        self._start_worker(
+            undo_defer_worker(store_dir, mods_dir, name),
+            partial(self._on_undo_done, refill=refill),
+        )
+
+    def _on_autofix_done(self, result: object, refresh: bool = True) -> None:
+        """Log a conflict auto-resolve outcome, then refresh the renamed scope."""
+        if not isinstance(result, dict):
+            return
+        self.append_log(_autofix_summary(result))
+        if refresh:
+            QTimer.singleShot(0, self._deferred_scope_refresh)
+
+    def _on_undo_done(self, result: object, refill: bool = False) -> None:
+        """Log a finished auto-fix undo, then refresh (and refill if needed)."""
+        if not isinstance(result, int):
+            return
+        self.append_log(_undo_summary(self._undo_name, result))
+        deferred = (
+            self._deferred_disabled_refill
+            if refill
+            else self._deferred_scope_refresh
+        )
+        QTimer.singleShot(0, deferred)
 
     def _on_delete_mod(self, node: ModNode) -> None:
         """Confirm and delete a mod or category folder and its tracked state."""

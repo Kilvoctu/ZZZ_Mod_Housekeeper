@@ -16,5 +16,7 @@ backups/
 *.exe
 *.lock
 *.bak
+*.md
+!README.md
 state.json
 tools/tests/

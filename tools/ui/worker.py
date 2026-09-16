@@ -33,13 +33,17 @@ from ..blend_vote import (
     apply_blend_vote_remap,
     scan_blend_vote_targets,
 )
+from ..claims import deference_specs
+from ..deferstate import record, undo_for_mod
 from ..dumpdata import DumpData, load_dump_data
 from ..fixer import (
     FilePlan,
     FixerData,
+    _deference_suggestions,
     apply_plan,
     collect_texture_override_hashes,
     detect_variant,
+    empty_fixer_data,
     known_hashes,
     load_fixer_data,
     revert_backups,
@@ -153,6 +157,11 @@ def _as_paths(scope: Scope) -> tuple[bool, list[Path]]:
     if isinstance(scope, (str, Path)):
         return True, [Path(scope)]
     return False, [Path(item) for item in scope]
+
+
+def _involved_mod(name: str) -> str:
+    """Mod name casefolded and DISABLED_-stripped, for conflict-involved matching."""
+    return name.strip().removeprefix(_DISABLED_PREFIX).casefold()
 
 
 def _parse_available(
@@ -472,6 +481,89 @@ def revert_worker(
             if pruned_folders:
                 log(f"Empty backup folders cleared: {pruned_folders} folder(s)")
         return restored
+
+    return TaskWorker(job, log_kwarg="log", parent=parent)
+
+
+def autofix_conflicts_worker(
+    mods_dir: Path,
+    store_dir: Path,
+    mod_name: str | None = None,
+    parent: QObject | None = None,
+) -> TaskWorker:
+    """Apply the cross-mod conflict fixes for ``mod_name`` (or every mod when None).
+
+    ``done`` carries a summary dict; edited files get a store backup first and the
+    applied specs are recorded so disabling the mod can surgically undo them."""
+
+    def job(log: LogFn) -> dict[str, Any]:
+        mods = Path(mods_dir)
+        store = Path(store_dir)
+        wraps, unifies, _rows = deference_specs(str(mods))
+        if mod_name is not None:
+            target = _involved_mod(mod_name)
+            wraps = [
+                spec
+                for spec in wraps
+                if target in {_involved_mod(spec.mod), _involved_mod(spec.other)}
+            ]
+            unifies = [
+                spec
+                for spec in unifies
+                if target
+                in {
+                    _involved_mod(spec.mod),
+                    *(_involved_mod(other) for other in spec.others),
+                }
+            ]
+        per_file = _deference_suggestions(mods, wraps=wraps, unifies=unifies)
+        applied_files: list[str] = []
+        applied_wraps: list[Any] = []
+        applied_unifies: list[Any] = []
+        edits = 0
+        for path, suggestions in per_file.items():
+            plan = FilePlan(path=path, suggestions=suggestions)
+            if not apply_plan(
+                plan,
+                empty_fixer_data(),
+                store_dir=store,
+                mods_dir=mods,
+                log=log,
+                structure=None,
+                backup=True,
+                suggestions=plan.suggestions,
+            ):
+                continue
+            applied_files.append(path)
+            edits += len(suggestions)
+            applied_wraps.extend(spec for spec in wraps if str(spec.file) == path)
+            applied_unifies.extend(spec for spec in unifies if str(spec.file) == path)
+        if applied_files:
+            record(store, mods, applied_wraps, applied_unifies)
+        pairs = {
+            " and ".join(sorted({spec.mod, spec.other})) for spec in applied_wraps
+        } | {
+            " and ".join(sorted({spec.mod, *spec.others})) for spec in applied_unifies
+        }
+        return {
+            "edits": edits,
+            "files": sorted(applied_files),
+            "pairs": sorted(pairs),
+        }
+
+    return TaskWorker(job, log_kwarg="log", parent=parent)
+
+
+def undo_defer_worker(
+    store_dir: Path,
+    mods_dir: Path,
+    mod_name: str,
+    parent: QObject | None = None,
+) -> TaskWorker:
+    """Undo the recorded cross-mod auto-fixes involving one mod; ``done`` carries the count."""
+
+    def job(log: LogFn) -> int:
+        return undo_for_mod(Path(store_dir), Path(mods_dir), mod_name, log=log)
 
     return TaskWorker(job, log_kwarg="log", parent=parent)
 

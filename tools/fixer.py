@@ -43,11 +43,36 @@ _FIRST_INDEX_RE = re.compile(r"^\s*match_first_index\s*=\s*(?P<value>\d+)\s*$")
 _INDEX_COUNT_RE = re.compile(r"^\s*match_index_count\s*=\s*(?P<value>\d+)\s*$")
 _CUSTOM_BINARY_RE = re.compile(r"(?im)^\s*filename\s*=\s*\S+\.(?:ib|buf)\s*$")
 
-STRUCTURAL_KINDS = frozenset({"insert_run", "add_section", "multiply_section"})
+HAIR_COMMANDLISTS_KIND = "hair_commandlists"
+HAIR_DISPATCH_KIND = "dispatch_run"
+DEFER_WRAP_KIND = "defer_wrap"
+DEFER_UNIFY_KIND = "defer_unify"
+STRUCTURAL_KINDS = frozenset(
+    {
+        "insert_run",
+        "add_section",
+        "multiply_section",
+        HAIR_COMMANDLISTS_KIND,
+        DEFER_WRAP_KIND,
+    }
+)
 INDEX_WARNING_KIND = "index_warning"
+SECTION_DELETE_KIND = "delete_section"
 _ANY_RUN_LINE_RE = re.compile(r"^\s*run\s*=", re.IGNORECASE)
+_DRAW_COMMAND_RE = re.compile(r"^\s*(?:draw|drawindexed|drawindexedcheat|drawraw)\b")
+_RESOURCE_BIND_RE = re.compile(r"^\s*(?:ib|vb\d+|ps-t\d+|this)\s*=")
 _PRIORITY_RE = re.compile(r"^\s*match_priority\s*=")
 _BLANK_RE = re.compile(r"^\s*$")
+
+_HAIR_DISPATCH_RE = re.compile(r"^checktextureoverride\s*=\s*ib\s*$", re.IGNORECASE)
+_HAIR_HANDLING_RE = re.compile(r"^handling\s*=\s*skip\s*$", re.IGNORECASE)
+_HAIR_DRAW_TYPE_EXCLUDE_RE = re.compile(
+    r"(?<![\w$])draw_type\s*==\s*(?:2|4)(?!\d)", re.IGNORECASE
+)
+_HAIR_CLAIM_MARKER_RE = re.compile(r"(?<![a-z0-9])ib[\s._-]*$", re.IGNORECASE)
+_HAIR_TOKEN_SPLIT_RE = re.compile(r"[^a-zA-Z0-9]+")
+_HAIR_COMMANDLIST_PREFIX = "commandlist."
+_HAIR_STEM_SEPARATORS = "._- "
 
 _UTF8_BOM = b"\xef\xbb\xbf"
 _TEXTUREOVERRIDE_PREFIX = "textureoverride"
@@ -722,6 +747,17 @@ def _owning_chars(structure: StructureData, h: str) -> set[str]:
     }
 
 
+def _section_has_draw_or_bind(sec: _Section) -> bool:
+    """Whether any body line through ``end`` issues a draw or binds a resource."""
+    for line_no, content in sec.body:
+        if line_no > sec.end:
+            continue
+        statement = content.strip().lower()
+        if _DRAW_COMMAND_RE.match(statement) or _RESOURCE_BIND_RE.match(statement):
+            return True
+    return False
+
+
 def _scan_structural(
     text: str, structure: StructureData, file: str = ""
 ) -> list[FixSuggestion]:
@@ -733,9 +769,9 @@ def _scan_structural_sections(
     sections: list[_Section], structure: StructureData, file: str = ""
 ) -> list[FixSuggestion]:
     """Structural suggestions on top of the line-level scan: insert_run (an IB
-    section missing any run command line), add_section (a present VB or
-    texture hash requiring its anchor IB) and multiply_section (missing sibling).
-    """
+    section with a draw or resource bind but no run command line; gate-only
+    bodies are skipped), add_section (a present VB or texture hash requiring
+    its anchor IB) and multiply_section (missing sibling)."""
     chars = structure.sorted_chars
     file_hashes = {h for section in sections for _line_no, h in section.hashes}
     suggestions: list[FixSuggestion] = []
@@ -750,7 +786,7 @@ def _scan_structural_sections(
             if rules.is_ib:
                 if sec.first_index_line is not None:
                     indexed_done.add(h)
-                    if not sec.has_run:
+                    if not sec.has_run and _section_has_draw_or_bind(sec):
                         key = ("insert_run", sec.name, sec.first_index_line)
                         if key not in seen:
                             seen.add(key)
@@ -767,7 +803,7 @@ def _scan_structural_sections(
                                     reason=f"IB {h}: add run = CommandListSkinTexture",
                                 )
                             )
-                elif not sec.has_run:
+                elif not sec.has_run and _section_has_draw_or_bind(sec):
                     unindexed.setdefault(h, (line_no, sec.name))
             sec_char = _section_char(sec.name, chars)
             if not sec_char:
@@ -882,6 +918,201 @@ def _scan_structural_sections(
                 reason=f"IB {h}: add run = CommandListSkinTexture",
             )
         )
+    return suggestions
+
+
+def delete_section_suggestion(
+    sec: _Section, file: str = "", reason: str = ""
+) -> FixSuggestion:
+    """A delete_section suggestion removing one parsed section's header through its last body line.
+
+    ``old`` snapshots the body lines through ``sec.end`` so apply_plan can re-validate the section
+    at apply time; the header is validated by name and blank lines after ``end`` stay in the file."""
+    return FixSuggestion(
+        file=file,
+        section=sec.name,
+        line_no=sec.start,
+        kind=SECTION_DELETE_KIND,
+        old="\n".join(content for line_no, content in sec.body if line_no <= sec.end),
+        new="",
+        after_line=sec.end,
+        reason=reason or f"delete section [{sec.name}]",
+    )
+
+
+def _hair_stem_name(name: str) -> str:
+    """Lowercased section name with a leading TextureOverride prefix removed."""
+    return _strip_texture_override(name).strip().lower()
+
+
+def _unique_hair_list_name(base: str, taken: set[str], suffix: str = "Hair") -> str:
+    """Case-insensitively unique CommandList name derived from a mod identity string.
+
+    ``base`` tokens (non-alphanumeric runs, first char capitalized) join with ``suffix``; a candidate colliding with
+    ``taken`` — the scope's lowered section names, compared bare and ``CommandList.``-prefixed — gets a numeric suffix, which the caller adds to ``taken``."""
+    stem = "".join(
+        token[:1].upper() + token[1:]
+        for token in _HAIR_TOKEN_SPLIT_RE.split(base)
+        if token
+    )
+    candidate = stem + suffix
+    number = 1
+    while (
+        candidate.lower() in taken
+        or _HAIR_COMMANDLIST_PREFIX + candidate.lower() in taken
+    ):
+        number += 1
+        candidate = f"{stem}{suffix}{number}"
+    return candidate
+
+
+def _hair_base(path: Path, scope_base: str) -> str:
+    """Mod identity for hair naming: passed-down scope folder name, else parent folder, else stem."""
+    return scope_base or path.parent.name or path.stem
+
+
+def _scope_section_names(paths: Iterable[Path]) -> set[str]:
+    """Lowercased section names across the scope's decodable ini files (hair-name pool)."""
+    taken: set[str] = set()
+    for path in paths:
+        try:
+            text, _encoding = _read_ini_details(path)
+        except (ValueError, OSError):
+            continue
+        taken.update(sec.name.strip().lower() for sec in _parse_sections(text))
+    return taken
+
+
+def _hair_exclusion_domain(
+    sections: list[_Section], stem: str, dispatch: _Section, claim: _Section
+) -> list[_Section]:
+    """Sections scanned for the DRAW_TYPE == 2|4 hair rewrite exclusion.
+
+    A separator-bearing claim stem clusters its prefix-matched siblings; a generic
+    (separator-less) stem clusters the whole file; dispatch and claim always join."""
+    if not stem or not any(ch in stem for ch in _HAIR_STEM_SEPARATORS):
+        return list(sections)
+    cluster = [sec for sec in sections if _hair_stem_name(sec.name).startswith(stem)]
+    cluster.extend((dispatch, claim))
+    return cluster
+
+
+def _scan_hair_rewrite(
+    sections: list[_Section],
+    file: str = "",
+    taken: set[str] | None = None,
+    base: str = "",
+) -> list[FixSuggestion]:
+    """Guide-pattern hair rewrite for one file holding exactly one dispatch + one claim section (v1).
+
+    The dispatch's ``checktextureoverride = ib`` line becomes a run into a draw-gated CommandList pair from the claim body (hash/match/handling dropped); claim + stem-sharing texcoord section deleted.
+    A ``DRAW_TYPE == 2|4`` line anywhere in the claim's name-stem cluster (whole file when the stem has no separator) blocks the rewrite; cross-file pairs emit nothing."""
+    if taken is None:
+        taken = {sec.name.strip().lower() for sec in sections}
+    dispatches: list[tuple[_Section, int, str]] = []
+    claims: list[tuple[_Section, int, int]] = []
+    for sec in sections:
+        if not sec.name.strip().lower().startswith(_TEXTUREOVERRIDE_PREFIX):
+            continue
+        dispatch: tuple[int, str] | None = None
+        first_index: int | None = None
+        index_count: int | None = None
+        handling = False
+        for line_no, content in sec.body:
+            if line_no > sec.end:
+                continue
+            if dispatch is None and _HAIR_DISPATCH_RE.match(content):
+                dispatch = (line_no, content)
+            if first_index is None and _FIRST_INDEX_RE.match(content):
+                first_index = int(_FIRST_INDEX_RE.match(content).group("value"))
+            if index_count is None and _INDEX_COUNT_RE.match(content):
+                index_count = int(_INDEX_COUNT_RE.match(content).group("value"))
+            if _HAIR_HANDLING_RE.match(content):
+                handling = True
+        if dispatch is not None:
+            dispatches.append((sec, dispatch[0], dispatch[1]))
+        elif sec.hashes and handling and first_index is not None and index_count is not None:
+            claims.append((sec, first_index, index_count))
+    if len(dispatches) != 1 or len(claims) != 1:
+        return []
+    dispatch_sec, dispatch_line_no, dispatch_line = dispatches[0]
+    claim, gate_first, gate_count = claims[0]
+    stem = _HAIR_CLAIM_MARKER_RE.sub("", _hair_stem_name(claim.name))
+    stem = stem.rstrip(_HAIR_STEM_SEPARATORS)
+    if any(
+        _HAIR_DRAW_TYPE_EXCLUDE_RE.search(content)
+        for sec in _hair_exclusion_domain(sections, stem, dispatch_sec, claim)
+        for _line_no, content in sec.body
+        if _line_no <= sec.end
+    ):
+        return []
+    texcoord = None
+    if stem:
+        for sec in sections:
+            if sec is claim or sec is dispatch_sec:
+                continue
+            if not sec.name.strip().lower().startswith(_TEXTUREOVERRIDE_PREFIX):
+                continue
+            stem_name = _hair_stem_name(sec.name)
+            if not stem_name.startswith(stem):
+                continue
+            tail = stem_name[len(stem):].lstrip(_HAIR_STEM_SEPARATORS)
+            if tail.startswith("texcoord"):
+                texcoord = sec
+                break
+    reason = (
+        f"convert dynamic hair dispatch to draw-gated claim (hash {claim.hashes[0][1]})"
+    )
+    hair_name = _unique_hair_list_name(base, taken)
+    taken.add(hair_name.lower())
+    run_name = _unique_hair_list_name(base, taken, suffix="HairA")
+    taken.add(run_name.lower())
+    body = [
+        content
+        for line_no, content in claim.body
+        if line_no <= claim.end
+        and not _HASH_LINE_RE.match(content)
+        and not _FIRST_INDEX_RE.match(content)
+        and not _INDEX_COUNT_RE.match(content)
+        and not _HAIR_HANDLING_RE.match(content)
+    ]
+    insert_text = "\n".join(
+        [
+            f"[CommandList.{hair_name}]",
+            f"if first_index == {gate_first} && index_count == {gate_count}",
+            f"    run = CommandList.{run_name}",
+            "endif",
+            "",
+            f"[CommandList.{run_name}]",
+            *body,
+        ]
+    )
+    indent = dispatch_line[: len(dispatch_line) - len(dispatch_line.lstrip())]
+    suggestions = [
+        FixSuggestion(
+            file=file,
+            section=dispatch_sec.name,
+            line_no=dispatch_line_no,
+            kind=HAIR_DISPATCH_KIND,
+            old=dispatch_line,
+            new=f"{indent}run = CommandList.{hair_name}",
+            reason=reason,
+        ),
+        FixSuggestion(
+            file=file,
+            section=claim.name,
+            line_no=claim.end,
+            kind=HAIR_COMMANDLISTS_KIND,
+            old=claim.hashes[0][1],
+            new=hair_name,
+            after_line=claim.end,
+            insert_text=insert_text,
+            reason=reason,
+        ),
+        delete_section_suggestion(claim, file=file, reason=reason),
+    ]
+    if texcoord is not None:
+        suggestions.append(delete_section_suggestion(texcoord, file=file, reason=reason))
     return suggestions
 
 
@@ -1060,11 +1291,16 @@ def _read_ini_details(path: Path) -> tuple[str, str]:
 
 
 def _scan_file_details(
-    path: Path, data: FixerData, structure: StructureData | None = None
+    path: Path,
+    data: FixerData,
+    structure: StructureData | None = None,
+    taken: set[str] | None = None,
+    base: str = "",
 ) -> tuple[str, str, list[FixSuggestion]]:
     """Read one .ini file and return (text, encoding, suggestions).
 
-    With a StructureData, structural suggestions are appended after the line-level ones."""
+    With a StructureData, structural and hair-rewrite suggestions are appended after the line-level ones;
+    ``taken`` (scope section names) and ``base`` (mod identity) feed the hair rewrite's unique CommandList naming and default to this file's own sections."""
     text, encoding = _read_ini_details(path)
     sections = _parse_sections(text)
     suggestions = _scan_text(text, data, file=str(path))
@@ -1082,13 +1318,22 @@ def _scan_file_details(
         suggestions.extend(
             _scan_structural_sections(sections, structure, file=str(path))
         )
+        suggestions.extend(
+            _scan_hair_rewrite(sections, file=str(path), taken=taken, base=base)
+        )
     return text, encoding, suggestions
 
 
 def _scan_file(
-    path: Path, data: FixerData, structure: StructureData | None = None
+    path: Path,
+    data: FixerData,
+    structure: StructureData | None = None,
+    taken: set[str] | None = None,
+    base: str = "",
 ) -> list[FixSuggestion]:
-    _text, _encoding, suggestions = _scan_file_details(path, data, structure)
+    _text, _encoding, suggestions = _scan_file_details(
+        path, data, structure, taken, base
+    )
     return suggestions
 
 
@@ -1192,20 +1437,88 @@ def collect_texture_override_hints(path: Path) -> dict[str, set[str]]:
         return {}
 
 
+def _deference_suggestions(
+    mods_dir: Path,
+    wraps: Sequence | None = None,
+    unifies: Sequence | None = None,
+) -> dict[str, list[FixSuggestion]]:
+    """Cross-mod deference edits per file path: defer wraps and vertex-count unifies.
+
+    The fixes are relational (both conflicting mods must be patched in one scope), so only scan_folder calls this; per-mod scan_files emits none. Pre-computed specs skip the claims pass.
+    Anchors use the claims parse's original line numbers (open at the section header, close at its last body line)."""
+    per_file: dict[str, list[FixSuggestion]] = {}
+    if wraps is None or unifies is None:
+        from .claims import deference_specs  # local import: claims imports this module
+
+        spec_wraps, spec_unifies, _rows = deference_specs(str(mods_dir))
+        wraps = spec_wraps if wraps is None else wraps
+        unifies = spec_unifies if unifies is None else unifies
+    wraps = sorted(
+        wraps, key=lambda spec: (str(spec.file), spec.section, spec.start, spec.flag)
+    )
+    unifies = sorted(unifies, key=lambda spec: (str(spec.file), spec.line_no))
+    for spec in wraps:
+        guard = f"if ${spec.flag} == 0"
+        reason = (
+            f"defer {spec.mod}'s [{spec.section}] claims to the mod owning "
+            f"${spec.flag}"
+        )
+        edits = per_file.setdefault(str(spec.file), [])
+        for after_line, insert_text in ((spec.start, guard), (spec.end, "endif")):
+            edits.append(
+                FixSuggestion(
+                    file=str(spec.file),
+                    section=spec.section,
+                    line_no=after_line,
+                    kind=DEFER_WRAP_KIND,
+                    old="",
+                    new=insert_text,
+                    reason=reason,
+                    after_line=after_line,
+                    insert_text=insert_text,
+                )
+            )
+    for spec in unifies:
+        limit = spec.new.rsplit("=", 1)[-1].strip()
+        per_file.setdefault(str(spec.file), []).append(
+            FixSuggestion(
+                file=str(spec.file),
+                section=spec.section,
+                line_no=spec.line_no,
+                kind=DEFER_UNIFY_KIND,
+                old=spec.old,
+                new=spec.new,
+                reason=(
+                    f"unify override_vertex_count to {limit} across the mods "
+                    "claiming this hash"
+                ),
+            )
+        )
+    return per_file
+
+
 def scan_folder(
     mods_dir: Path, data: FixerData, structure: StructureData | None = None
 ) -> list[FilePlan]:
     """Scan every .ini under mods_dir recursively and return non-empty plans.
 
-    Skips files or path components named DISABLED_versionfix_/DISABLED_BACKUP_ (genuine
-    DISABLED-named files still scan); a StructureData appends structural suggestions."""
+    Skips files or path components named DISABLED_versionfix_/DISABLED_BACKUP_ (genuine DISABLED-named files still scan); a StructureData appends structural, hair-rewrite and cross-mod
+    deference suggestions — relational (both conflicting mods must be patched in one folder scope), so per-mod scan_files emits none — and names hair CommandLists after mods_dir (unique across the scope)."""
     mods_dir = Path(mods_dir)
+    paths = list(included_ini_files(mods_dir))
+    taken = _scope_section_names(paths) if structure is not None else None
+    deference = _deference_suggestions(mods_dir) if structure is not None else {}
     plans: list[FilePlan] = []
-    for path in included_ini_files(mods_dir):
+    for path in paths:
         try:
-            suggestions = _scan_file(path, data, structure)
+            suggestions = _scan_file(
+                path, data, structure, taken, _hair_base(path, mods_dir.name)
+            )
         except (ValueError, OSError):
             continue
+        extra = deference.get(str(path))
+        if extra:
+            suggestions = [*suggestions, *extra]
         if suggestions:
             plans.append(FilePlan(path=str(path), suggestions=suggestions))
     return plans
@@ -1216,15 +1529,18 @@ def scan_files(
 ) -> list[FilePlan]:
     """Scan explicit .ini file paths (no directory recursion, no gating).
 
-    Skips undecodable or unreadable files and directories; a StructureData appends structural
-    suggestions."""
-    plans: list[FilePlan] = []
+    Skips undecodable or unreadable files and directories; a StructureData appends structural and hair-rewrite suggestions,
+    naming hair CommandLists after each file's parent folder (unique across the scope's files)."""
+    checked: list[Path] = []
     for path in paths:
         path = Path(path)
-        if path.is_dir():
-            continue
+        if not path.is_dir():
+            checked.append(path)
+    taken = _scope_section_names(checked) if structure is not None else None
+    plans: list[FilePlan] = []
+    for path in checked:
         try:
-            suggestions = _scan_file(path, data, structure)
+            suggestions = _scan_file(path, data, structure, taken, _hair_base(path, ""))
         except (ValueError, OSError):
             continue
         if suggestions:
@@ -1267,7 +1583,60 @@ def _replace_on_line(content: str, suggestion: FixSuggestion) -> str | None:
         if match is None or match.group("value") != suggestion.old:
             return None
         return content[: match.start("value")] + suggestion.new + content[match.end("value"):]
+    if suggestion.kind in (HAIR_DISPATCH_KIND, DEFER_UNIFY_KIND):
+        if content != suggestion.old:
+            return None
+        return suggestion.new
     return None
+
+
+def _delete_section_span(
+    suggestion: FixSuggestion, lines: list[str]
+) -> tuple[int, int] | None:
+    """(start, end) original line numbers of a delete_section target, or None when stale.
+
+    The header at ``line_no`` must parse as ``[suggestion.section]`` and the body lines through
+    ``after_line`` must still equal the scanned ``old`` snapshot."""
+    start, end = suggestion.line_no, suggestion.after_line
+    if not 1 <= start <= end <= len(lines):
+        return None
+    header, _eol = _split_eol(lines[start - 1])
+    match = _SECTION_RE.match(header)
+    if match is None or match.group("name") != suggestion.section:
+        return None
+    body = "\n".join(_split_eol(line)[0] for line in lines[start:end])
+    if body != suggestion.old:
+        return None
+    return start, end
+
+
+def _apply_section_deletes(
+    deletes: list[FixSuggestion],
+    lines: list[str],
+    fixed_lines: list[str],
+    orig_index: dict[int, int],
+    log: Callable[[str], None],
+) -> int:
+    """Apply delete_section suggestions last, highest original line first.
+
+    Stale ranges (section moved or content drifted) and overlapping duplicates are logged as
+    skipped and left in place; returns the number of deletes applied."""
+    applied = 0
+    removed: list[tuple[int, int]] = []
+    for suggestion in sorted(deletes, key=lambda s: s.line_no, reverse=True):
+        span = _delete_section_span(suggestion, lines)
+        if span is None:
+            log(f"skipped stale delete: {suggestion.reason}")
+            continue
+        start, end = span
+        if any(r_start <= end and start <= r_end for r_start, r_end in removed):
+            log(f"skipped duplicate delete: {suggestion.reason}")
+            continue
+        del fixed_lines[orig_index[start] : orig_index[end] + 1]
+        removed.append(span)
+        applied += 1
+        log(suggestion.reason)
+    return applied
 
 
 def apply_plan(
@@ -1282,8 +1651,8 @@ def apply_plan(
 ) -> bool:
     """Apply one file's fixes, backing up the original.  Returns True when written.
 
-    The file is re-scanned first by default (``suggestions`` skips the scan); ``backup=False``
-    writes without a new backup (fixpoint pass 2+)."""
+    The file is re-scanned first by default (``suggestions`` skips the scan); ``backup=False`` writes
+    without a new backup (fixpoint pass 2+); section deletes apply last, highest original line first."""
     path = Path(plan.path)
     if suggestions is None:
         text, encoding, suggestions = _scan_file_details(path, data, structure)
@@ -1296,6 +1665,7 @@ def apply_plan(
         suggestion
         for suggestion in suggestions
         if suggestion.kind in STRUCTURAL_KINDS
+        or suggestion.kind == SECTION_DELETE_KIND
         or suggestion.old.lower() != suggestion.new.lower()
     ]
     if not effective:
@@ -1305,7 +1675,12 @@ def apply_plan(
     end_key = len(lines) + 1
     by_line: dict[int, FixSuggestion] = {}
     insertions: dict[int, list[str]] = {}
+    deletes = [
+        suggestion for suggestion in effective if suggestion.kind == SECTION_DELETE_KIND
+    ]
     for suggestion in effective:
+        if suggestion.kind == SECTION_DELETE_KIND:
+            continue
         if suggestion.kind in STRUCTURAL_KINDS:
             if 0 < suggestion.after_line < len(lines):
                 key = suggestion.after_line + 1
@@ -1325,10 +1700,13 @@ def apply_plan(
             eol = "\r"
             break
     fixed_lines: list[str] = []
+    orig_index: dict[int, int] = {}
     for line_no, line in enumerate(lines, start=1):
         for insert_text in insertions.get(line_no, ()):
             for segment in insert_text.split("\n"):
                 fixed_lines.append(segment + eol)
+        if deletes:
+            orig_index[line_no] = len(fixed_lines)
         suggestion = by_line.get(line_no)
         if suggestion is None:
             fixed_lines.append(line)
@@ -1344,6 +1722,14 @@ def apply_plan(
     for insert_text in insertions.get(end_key, ()):
         for segment in insert_text.split("\n"):
             fixed_lines.append(segment + eol)
+    applied_deletes = 0
+    if deletes:
+        applied_deletes = _apply_section_deletes(
+            deletes, lines, fixed_lines, orig_index, log
+        )
+        if applied_deletes == 0 and not by_line and not insertions:
+            log(f"no changes needed: {path}")
+            return False
     backup_path = None
     if backup:
         stamp = int(time.time() * 1000)
@@ -1362,10 +1748,11 @@ def apply_plan(
             log(f"{suggestion.old} to {suggestion.new}{suffix}")
         elif suggestion.kind in STRUCTURAL_KINDS:
             log(suggestion.reason)
+    changes = len(effective) - len(deletes) + applied_deletes
     if backup_path is not None:
-        log(f"fixed {path} ({len(effective)} changes, backup {backup_path.name} -> store)")
+        log(f"fixed {path} ({changes} changes, backup {backup_path.name} -> store)")
     else:
-        log(f"fixed {path} ({len(effective)} changes, no new backup)")
+        log(f"fixed {path} ({changes} changes, no new backup)")
     return True
 
 
