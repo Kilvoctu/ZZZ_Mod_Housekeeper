@@ -44,7 +44,7 @@ This app is built mainly for personal use.
 
 ## Credits & license
 
-Source data is pulled from [ZZZ-Model-Hash](https://github.com/hefengchang/ZZZ-Model-Hash), [ZZZ-Model-Hash_LowVarm](https://github.com/hefengchang/ZZZ-Model-Hash_LowVarm), and [ZZZ-Model-Fix-Tool](https://github.com/hefengchang/ZZZ-Model-Fix-Tool) by [    hefengchang](https://github.com/hefengchang).  
-Inspired by [ZZZ-Mod-Fixer](https://github.com/Vonksdesu/ZZZ-Mod-Fixer) and [ZZMI_tools](https://github.com/Satan1c/ZZMI_tools).
+Source data is pulled from [ZZZ-Model-Hash](https://github.com/hefengchang/ZZZ-Model-Hash), [ZZZ-Model-Hash_LowVarm](https://github.com/hefengchang/ZZZ-Model-Hash_LowVarm), and [ZZZ-Model-Fix-Tool](https://github.com/hefengchang/ZZZ-Model-Fix-Tool) by [    hefengchang](https://github.com/hefengchang).
+Fixer tooling derived from [CaveRabbit](https://github.com/CaveRabbit)(RabbitFX), these linked sources, and mod community. Inspired by [ZZZ-Mod-Fixer](https://github.com/Vonksdesu/ZZZ-Mod-Fixer) and [ZZMI_tools](https://github.com/Satan1c/ZZMI_tools).
 
 MIT License, Copyright (c) 2026 Kilvoctu — see [LICENSE](LICENSE).

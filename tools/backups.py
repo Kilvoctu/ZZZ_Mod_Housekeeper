@@ -7,7 +7,7 @@ Decoding a store path resolves the ACTUAL current file for the canonical key: th
 import os
 import re
 import shutil
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha1
@@ -17,6 +17,7 @@ from .repo import project_root
 
 BACKUP_PREFIX = "DISABLED_versionfix_"
 FOREIGN_BACKUP_PREFIX = "DISABLED_BACKUP_"
+RABBITFX_BACKUP_PREFIX = "DISABLED_RABBITFXBACKUP_"
 BACKUP_NAME_RE = re.compile(r"^DISABLED_versionfix_(?P<stamp>\d+)-(?P<name>.+)$")
 STORE_BACKUP_NAME_RE = re.compile(
     r"^(?P<name>.+) -- (?P<when>\d{4}-\d{2}-\d{2} \d{2}\.\d{2}\.\d{2})(?: \((?P<dup>\d+)\))?\.bak$"
@@ -164,6 +165,32 @@ def prune_empty_store_folders(store_dir: Path, mods_dir: Path) -> int:
     return removed
 
 
+def prune_store_backups_newer_than(
+    live: Path, chosen: Path, log: Callable[[str], None] = print
+) -> int:
+    """Delete store backups of ``live`` newer than ``chosen``; returns count dropped.
+
+    Walks chosen.parent (the canonical store folder), decodes each sibling .bak via ``_decode_backup_name`` and unlinks those sharing ``live.name`` with a strictly greater (stamp, dup) ordering key; unparseable/foreign files and other live names stay, per-file failures are logged and never raised."""
+    decoded = _decode_backup_name(Path(chosen).name)
+    if decoded is None or decoded[1] != Path(live).name:
+        return 0
+    key = (decoded[0], decoded[2])
+    dropped = 0
+    for backup in _backup_candidates(chosen.parent):
+        if backup == chosen:
+            continue
+        other = _decode_backup_name(backup.name)
+        if other is None or other[1] != live.name or (other[0], other[2]) <= key:
+            continue
+        try:
+            backup.unlink()
+        except OSError as exc:
+            log(f"could not drop stale backup {backup}: {exc}")
+            continue
+        dropped += 1
+    return dropped
+
+
 _DISABLED_TOGGLE = "DISABLED_"
 
 
@@ -264,18 +291,20 @@ def _backup_candidates(store_dir: Path, recursive: bool = False) -> list[Path]:
 
 
 def is_backup_name(name: str) -> bool:
-    """True for files starting with either backup convention (case-sensitive)."""
-    return name.startswith((BACKUP_PREFIX, FOREIGN_BACKUP_PREFIX))
+    """True for files starting with any backup convention (case-sensitive)."""
+    return name.startswith(
+        (BACKUP_PREFIX, FOREIGN_BACKUP_PREFIX, RABBITFX_BACKUP_PREFIX)
+    )
 
 
 def is_backup_dir_part(part: str) -> bool:
-    """True for directory components starting with either backup convention."""
+    """True for directory components starting with any backup convention."""
     return is_backup_name(part)
 
 
 def is_backup_path(parts: tuple[str, ...]) -> bool:
     """True for a relative path whose filename or any directory component
-    uses either backup convention."""
+    uses any backup convention."""
     return is_backup_name(parts[-1]) or any(
         is_backup_dir_part(part) for part in parts[:-1]
     )
@@ -284,7 +313,7 @@ def is_backup_path(parts: tuple[str, ...]) -> bool:
 def included_ini_files(root: Path) -> Iterator[Path]:
     """Every .ini under root that is not backup-named, sorted.
 
-    Yields each *.ini under root recursively, sorted by string path, whose relative-path parts pass is_backup_path: the filename or any directory component starts with neither backup convention.
+    Yields each *.ini under root recursively, sorted by string path, whose relative-path parts pass is_backup_path: the filename or any directory component starts with none of the backup conventions.
     """
     for path in sorted(root.rglob("*.ini"), key=lambda item: str(item)):
         if not is_backup_path(path.relative_to(root).parts):

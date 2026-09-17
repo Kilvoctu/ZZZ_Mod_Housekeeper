@@ -57,7 +57,9 @@ STRUCTURAL_KINDS = frozenset(
     }
 )
 INDEX_WARNING_KIND = "index_warning"
+WARNING_KINDS = frozenset({INDEX_WARNING_KIND})
 SECTION_DELETE_KIND = "delete_section"
+RABBITFX_KIND = "rabbitfx"
 _ANY_RUN_LINE_RE = re.compile(r"^\s*run\s*=", re.IGNORECASE)
 _DRAW_COMMAND_RE = re.compile(r"^\s*(?:draw|drawindexed|drawindexedcheat|drawraw)\b")
 _RESOURCE_BIND_RE = re.compile(r"^\s*(?:ib|vb\d+|ps-t\d+|this)\s*=")
@@ -1290,6 +1292,122 @@ def _read_ini_details(path: Path) -> tuple[str, str]:
     return _decode_ini(path.read_bytes())
 
 
+_RABBITFX_ROOT = "Resource\\RabbitFX\\"
+_RABBITFX_SLOT_KEYS = {"ps-t17": "GlowMap", "ps-t18": "FXMap"}
+_RABBITFX_CANONICAL_KEYS = {
+    "glowmap": "GlowMap",
+    "fxmap": "FXMap",
+    "diffuse": "Diffuse",
+    "lightmap": "Lightmap",
+    "materialmap": "Materialmap",
+    "stockingmap": "Stockingmap",
+}
+_RABBITFX_SLOT_RE = re.compile(
+    r"^\s*(?P<slot>ps-t1[78])\s*=\s*(?P<value>\S.*?)\s*$", re.IGNORECASE
+)
+_RABBITFX_NAMED_RE = re.compile(
+    r"^\s*Resource\\RabbitFX\\"
+    r"(?P<key>GlowMap|FXMap|Diffuse|Lightmap|Materialmap|Stockingmap)"
+    r"\s*=\s*(?P<value>\S.*?)\s*$",
+    re.IGNORECASE,
+)
+
+
+def _rabbitfx_indent(content: str) -> str:
+    """Leading whitespace of one ini line, verbatim."""
+    return content[: len(content) - len(content.lstrip())]
+
+
+def _rabbitfx_named_keys(text: str) -> set[str]:
+    """Lowercased canonical keys of every RabbitFX named-bind line in the file.
+
+    Collected regardless of ref or null state: each such line already occupies its
+    named key, so slot conversions must not duplicate it."""
+    keys: set[str] = set()
+    for line in text.splitlines(keepends=True):
+        match = _RABBITFX_NAMED_RE.match(_split_eol(line)[0])
+        if match is not None:
+            keys.add(match.group("key").lower())
+    return keys
+
+
+def _rabbitfx_slot_fix(
+    content: str, claimed: set[str], file: str, section: str, line_no: int
+) -> FixSuggestion | None:
+    """Slot-to-named bind fix for a ps-t17/ps-t18 line, or None when not applicable.
+
+    The value is kept verbatim; an already-declared named key (dedup guard) or an
+    explicit ``= null`` unbind is left alone."""
+    match = _RABBITFX_SLOT_RE.match(content)
+    if match is None:
+        return None
+    slot = match.group("slot").lower()
+    value = match.group("value")
+    key = _RABBITFX_SLOT_KEYS[slot]
+    if key.lower() in claimed or value.lower() == "null":
+        return None
+    return FixSuggestion(
+        file=file,
+        section=section,
+        line_no=line_no,
+        kind=RABBITFX_KIND,
+        old=content,
+        new=f"{_rabbitfx_indent(content)}{_RABBITFX_ROOT}{key} = ref {value}",
+        labels="",
+        reason=f"migrate RabbitFX {slot} slot bind to named {_RABBITFX_ROOT}{key}",
+    )
+
+
+def _rabbitfx_named_fix(
+    content: str, file: str, section: str, line_no: int
+) -> FixSuggestion | None:
+    """Missing-``ref`` fix for a RabbitFX named-key bind line, or None.
+
+    Path and key casing canonicalize; ``= null`` unbinds, values already carrying
+    ``ref`` (including ``ref ref`` junk) and custom keys are untouched."""
+    match = _RABBITFX_NAMED_RE.match(content)
+    if match is None:
+        return None
+    value = match.group("value")
+    if value.lower() == "null" or value.lower().startswith("ref"):
+        return None
+    key = _RABBITFX_CANONICAL_KEYS[match.group("key").lower()]
+    return FixSuggestion(
+        file=file,
+        section=section,
+        line_no=line_no,
+        kind=RABBITFX_KIND,
+        old=content,
+        new=f"{_rabbitfx_indent(content)}{_RABBITFX_ROOT}{key} = ref {value}",
+        labels="",
+        reason=f"add missing ref to RabbitFX named bind {_RABBITFX_ROOT}{key}",
+    )
+
+
+def _scan_rabbitfx(text: str, file: str = "") -> list[FixSuggestion]:
+    """RabbitFX-format line fixes for decoded ini text.
+
+    Migrates legacy ``ps-t17``/``ps-t18`` slot binds and missing-``ref`` named binds to canonical
+    ``Resource\\RabbitFX\\...`` binds; [] when no ``rabbitfx`` token occurs anywhere (protects non-RabbitFX mods)."""
+    if "rabbitfx" not in text.lower():
+        return []
+    claimed = _rabbitfx_named_keys(text)
+    suggestions: list[FixSuggestion] = []
+    section = ""
+    for line_no, line in enumerate(text.splitlines(keepends=True), start=1):
+        content, _eol = _split_eol(line)
+        section_match = _SECTION_RE.match(content)
+        if section_match is not None:
+            section = section_match.group("name")
+            continue
+        fix = _rabbitfx_slot_fix(content, claimed, file, section, line_no)
+        if fix is None:
+            fix = _rabbitfx_named_fix(content, file, section, line_no)
+        if fix is not None:
+            suggestions.append(fix)
+    return suggestions
+
+
 def _scan_file_details(
     path: Path,
     data: FixerData,
@@ -1314,6 +1432,7 @@ def _scan_file_details(
         for suggestion in _scan_index_remaps(sections, data, file=str(path))
         if suggestion.line_no not in covered
     )
+    suggestions.extend(_scan_rabbitfx(text, file=str(path)))
     if structure is not None:
         suggestions.extend(
             _scan_structural_sections(sections, structure, file=str(path))
@@ -1583,7 +1702,7 @@ def _replace_on_line(content: str, suggestion: FixSuggestion) -> str | None:
         if match is None or match.group("value") != suggestion.old:
             return None
         return content[: match.start("value")] + suggestion.new + content[match.end("value"):]
-    if suggestion.kind in (HAIR_DISPATCH_KIND, DEFER_UNIFY_KIND):
+    if suggestion.kind in (HAIR_DISPATCH_KIND, DEFER_UNIFY_KIND, RABBITFX_KIND):
         if content != suggestion.old:
             return None
         return suggestion.new
@@ -1659,7 +1778,7 @@ def apply_plan(
     else:
         text, encoding = _read_ini_details(path)
     for suggestion in suggestions:
-        if suggestion.kind == INDEX_WARNING_KIND:
+        if suggestion.kind in WARNING_KINDS:
             log(f"warning: {suggestion.reason}")
     effective = [
         suggestion

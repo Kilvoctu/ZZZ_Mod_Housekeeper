@@ -5,6 +5,7 @@ A mod root may be promoted to a wrapper parent that holds only loose files (e.g.
 """
 
 import os
+import time
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,6 +33,27 @@ BROKEN_BUFFERS_SIGNAL = "buffers"
 CURRENT_SIGNAL = "up to date"
 OLD_HASH_SIGNAL = "old hash"
 SECTIONS_SIGNAL = "sections"
+_LOCK_RETRIES = 3
+_LOCK_DELAY_S = 0.15
+
+
+def retry_on_lock(operation: Callable[[], None]) -> None:
+    """Run ``operation`` against a possibly-locked folder, retrying briefly.
+
+    Transient OSErrors (antivirus, indexing, a folder open in File Explorer) retry up to
+    ``_LOCK_RETRIES`` times; FileExistsError and the final residual error re-raise."""
+    last: OSError | None = None
+    for attempt in range(_LOCK_RETRIES):
+        try:
+            operation()
+            return
+        except FileExistsError:
+            raise
+        except OSError as exc:
+            last = exc
+            if attempt < _LOCK_RETRIES - 1:
+                time.sleep(_LOCK_DELAY_S)
+    raise last  # type: ignore[misc]
 
 
 @dataclass
@@ -65,7 +87,7 @@ def set_mod_enabled(path: Path, enabled: bool) -> Path:
         target = path.parent / (_DISABLED_PREFIX + name)
     if target.exists():
         raise FileExistsError(f"target already exists: {target}")
-    path.rename(target)
+    retry_on_lock(lambda: path.rename(target))
     return target
 
 
@@ -86,7 +108,7 @@ def rename_mod_folder(path: Path, new_name: str) -> Path:
     target = path.parent / ((_DISABLED_PREFIX + cleaned) if disabled else cleaned)
     if target.exists() and path.name.lower() != target.name.lower():
         raise FileExistsError(f"target already exists: {target}")
-    path.rename(target)
+    retry_on_lock(lambda: path.rename(target))
     return target
 
 

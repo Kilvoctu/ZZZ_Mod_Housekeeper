@@ -208,6 +208,16 @@ def _display_name(node: ModNode) -> str:
     return node.name.removeprefix(_DISABLED_PREFIX)
 
 
+_LOCK_ERROR_RE = re.compile(r"\[WinError (?:5|32)\]")
+
+
+def _is_folder_lock(message: str) -> bool:
+    """True when a worker error message means the folder is held by another process."""
+    return _LOCK_ERROR_RE.search(message) is not None or (
+        "being used by another process" in message
+    )
+
+
 def _toggle_flip(old_name: str, new_name: str) -> str | None:
     """Classify a rename as a mod enable/disable flip; None for plain renames."""
     was_disabled = old_name.startswith(_DISABLED_PREFIX)
@@ -2536,6 +2546,9 @@ class MainWindow(QMainWindow):
         self._worker: TaskWorker | None = None
         self._fixing_name = ""
         self._undo_name = ""
+        self._retry_context: tuple[
+            str, str, Callable[[], TaskWorker], Callable[[object], None]
+        ] | None = None
         self._fixing_node: ModNode | None = None
         self._scope_refresh_node: ModNode | None = None
         self._node_items: dict[int, QTreeWidgetItem] = {}
@@ -2810,9 +2823,14 @@ class MainWindow(QMainWindow):
             return
         self._preset_name = name
         self.append_log(f"Applying preset '{name}'…")
+        self._retry_context = (
+            name, "apply preset", lambda: apply_preset_worker(changes),
+            self._on_apply_preset_done,
+        )
         self._start_worker(apply_preset_worker(changes), self._on_apply_preset_done)
 
     def _on_apply_preset_done(self, result: object) -> None:
+        self._retry_context = None
         if not isinstance(result, int):
             return
         self.append_log(
@@ -3240,6 +3258,24 @@ class MainWindow(QMainWindow):
 
     def _on_worker_error(self, message: str) -> None:
         self._pending_analyzing_log = None
+        ctx = self._retry_context
+        if ctx is not None and _is_folder_lock(message):
+            display, action, factory, on_done = ctx
+            self._retry_context = None
+            if self._confirm_retry(action, display):
+                QTimer.singleShot(
+                    0,
+                    lambda factory=factory, on_done=on_done: self._start_worker(
+                        factory(), on_done
+                    ),
+                )
+                return
+            self.append_log(
+                f"Skipped {action} '{display}' (folder locked); "
+                "close Explorer and retry"
+            )
+            QTimer.singleShot(0, self._deferred_scope_refresh)
+            return
         self.append_log(f"ERROR: {message}")
 
     def _on_worker_finished(self) -> None:
@@ -3263,6 +3299,19 @@ class MainWindow(QMainWindow):
             QMessageBox.StandardButton.No,
         )
         return answer == QMessageBox.StandardButton.Yes
+
+    def _confirm_retry(self, action: str, display: str) -> bool:
+        """Retry/Cancel dialog when a folder is locked by File Explorer or another process."""
+        self._restore_edge_cursor()
+        answer = QMessageBox.question(
+            self,
+            "Folder is locked",
+            f"Could not {action} '{display}' — its folder is probably open in File "
+            "Explorer. Close the window showing it, then click Retry.",
+            QMessageBox.StandardButton.Retry | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Retry,
+        )
+        return answer == QMessageBox.StandardButton.Retry
 
     def _start_worker(self, worker: TaskWorker, on_done: Callable[[object], None]) -> None:
         """Start a background task and disable actions until it finishes."""
@@ -3736,40 +3785,53 @@ class MainWindow(QMainWindow):
             )
             self.append_log("Busy — try again when the current task finishes.")
             return
-        try:
-            new_path = set_mod_enabled(node.path, desired_enabled)
-        except FileExistsError:
-            self.append_log(
-                f"Cannot {'enable' if desired_enabled else 'disable'} "
-                f"'{node.name}': target folder already exists"
-            )
-            item.setCheckState(
-                1, Qt.CheckState.Unchecked if node.disabled else Qt.CheckState.Checked
-            )
-        except OSError as exc:
-            self.append_log(f"ERROR: {exc}")
-            item.setCheckState(
-                1, Qt.CheckState.Unchecked if node.disabled else Qt.CheckState.Checked
-            )
+        if desired_enabled:
+            _toggle_word = "enable"
         else:
-            old_name = node.name
-            node.name = new_path.name
-            node.disabled = not desired_enabled
-            item.setText(0, _display_name(node))
-            self.append_log(
-                f"{'Enabled' if desired_enabled else 'Disabled'} '{_display_name(node)}'"
-            )
-            retarget_subtree_paths(node, new_path)
-            self._fixing_node = node
-            flip = _toggle_flip(old_name, node.name)
-            refill = self._show_enabled_only and not desired_enabled
-            if flip is not None and self._auto_resolve_conflicts:
-                self._start_flip_autofix(node, flip, refill=refill)
+            _toggle_word = "disable"
+        while True:
+            try:
+                new_path = set_mod_enabled(node.path, desired_enabled)
+                break
+            except FileExistsError:
+                self.append_log(
+                    f"Cannot {'enable' if desired_enabled else 'disable'} "
+                    f"'{node.name}': target folder already exists"
+                )
+                item.setCheckState(
+                    1,
+                    Qt.CheckState.Unchecked if node.disabled else Qt.CheckState.Checked,
+                )
                 return
-            if refill:
-                QTimer.singleShot(0, self._deferred_disabled_refill)
-            else:
-                QTimer.singleShot(0, self._deferred_scope_refresh)
+            except OSError:
+                item.setCheckState(
+                    1,
+                    Qt.CheckState.Unchecked if node.disabled else Qt.CheckState.Checked,
+                )
+                if not self._confirm_retry(_toggle_word, _display_name(node)):
+                    self.append_log(
+                        f"Skipped {'enabling' if desired_enabled else 'disabling'} "
+                        f"'{_display_name(node)}' (folder locked)"
+                    )
+                    return
+        old_name = node.name
+        node.name = new_path.name
+        node.disabled = not desired_enabled
+        item.setText(0, _display_name(node))
+        self.append_log(
+            f"{'Enabled' if desired_enabled else 'Disabled'} '{_display_name(node)}'"
+        )
+        retarget_subtree_paths(node, new_path)
+        self._fixing_node = node
+        flip = _toggle_flip(old_name, node.name)
+        refill = self._show_enabled_only and not desired_enabled
+        if flip is not None and self._auto_resolve_conflicts:
+            self._start_flip_autofix(node, flip, refill=refill)
+            return
+        if refill:
+            QTimer.singleShot(0, self._deferred_disabled_refill)
+        else:
+            QTimer.singleShot(0, self._deferred_scope_refresh)
 
     def _on_title_bar_context_menu(self, pos: QPoint) -> None:
         """Pop the root menu for a right-click on the title bar."""
@@ -3930,6 +3992,11 @@ class MainWindow(QMainWindow):
             else:
                 old_entry = prefix + node.path.name
             self._expected_removals.add(old_entry)
+        self._retry_context = (
+            _display_name(node), "rename",
+            lambda: rename_folder_worker(mods_dir, node.path, name, node.kind),
+            self._on_rename_done,
+        )
         self._start_worker(
             rename_folder_worker(mods_dir, node.path, name, node.kind),
             self._on_rename_done,
@@ -3937,6 +4004,7 @@ class MainWindow(QMainWindow):
 
     def _on_rename_done(self, result: object) -> None:
         """Apply a finished rename to the tree node, item and subtree paths."""
+        self._retry_context = None
         node = self._renaming_node
         self._renaming_node = None
         if not isinstance(result, Path) or node is None:
@@ -4046,6 +4114,11 @@ class MainWindow(QMainWindow):
             else:
                 old_entry = prefix + node.path.name
             self._expected_removals.add(old_entry)
+        self._retry_context = (
+            _display_name(node), "delete",
+            lambda: delete_folder_worker(mods_dir, node.path, node.kind),
+            self._on_delete_done,
+        )
         self._start_worker(
             delete_folder_worker(mods_dir, node.path, node.kind),
             self._on_delete_done,
@@ -4053,6 +4126,7 @@ class MainWindow(QMainWindow):
 
     def _on_delete_done(self, result: object) -> None:
         """Rescan the mods overview after a finished folder deletion."""
+        self._retry_context = None
         if not isinstance(result, tuple) or len(result) != 2:
             return
         deleted, _file_count = result

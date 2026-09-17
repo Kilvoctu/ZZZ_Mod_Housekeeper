@@ -205,8 +205,13 @@ def remap_bytes(data: bytes, table: dict[int, int]) -> tuple[bytes, int]:
     return bytes(out), changed
 
 
-def scan_blend_targets(folder: Path, tables: BlendTables) -> list[BlendTarget]:
-    """Deduped blend targets across every includable .ini under folder."""
+def scan_blend_targets(
+    folder: Path, tables: BlendTables, log: Callable[[str], None] | None = None
+) -> list[BlendTarget]:
+    """Deduped blend targets across every includable .ini under folder.
+
+    A .buf bound by several distinct blend hashes is a shared pre-split buffer no single table can safely remap, so all of its targets are refused (one log line per refused path when log is given).
+    """
     targets: list[BlendTarget] = []
     seen: set[tuple[str, Path]] = set()
     for ini in included_ini_files(Path(folder)):
@@ -216,6 +221,18 @@ def scan_blend_targets(folder: Path, tables: BlendTables) -> list[BlendTarget]:
                 continue
             seen.add(key)
             targets.append(target)
+    by_path: dict[Path, set[str]] = {}
+    for target in targets:
+        by_path.setdefault(target.path.resolve(), set()).add(target.hash)
+    shared = {path: hashes for path, hashes in by_path.items() if len(hashes) > 1}
+    if shared:
+        targets = [target for target in targets if target.path.resolve() not in shared]
+        if log is not None:
+            for path in sorted(shared):
+                log(
+                    f"blend split required: {path.name} shared by "
+                    f"{' '.join(sorted(shared[path]))}; remap skipped"
+                )
     return targets
 
 

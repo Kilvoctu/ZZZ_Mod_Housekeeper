@@ -19,6 +19,7 @@ from ..backups import (
     delete_store_folder,
     included_ini_files,
     prune_empty_store_folders,
+    prune_store_backups_newer_than,
     retarget_store_folder,
 )
 from ..blend_remap import (
@@ -56,6 +57,7 @@ from ..mods import (
     analyze_mods,
     analyze_scope,
     rename_mod_folder,
+    retry_on_lock,
     set_mod_enabled,
 )
 from ..presets import remove_preset_paths, retarget_preset_paths
@@ -400,7 +402,7 @@ def fix_mod_worker(
             plans = rescan()
         if is_dir:
             tables = load_blend_remaps()
-            for target in scan_blend_targets(paths[0], tables):
+            for target in scan_blend_targets(paths[0], tables, log=log):
                 apply_remap(target, default_backups_dir(), Path(mods_dir), log=log)
             for target in scan_blend_vote_targets(paths[0], data.dumps, tables):
                 apply_blend_vote_remap(
@@ -466,6 +468,10 @@ def revert_worker(
         if missing:
             raise ValueError("backup no longer exists: " + "; ".join(missing))
         restored = revert_backups(choices, log=log)
+        for live, chosen in choices:
+            dropped = prune_store_backups_newer_than(live, chosen, log=log)
+            if dropped:
+                log(f"dropped {dropped} stale backup(s) from {live.name}")
         if mods_dir is not None and store_dir is not None:
             pruned = prune_texcoord_markers(
                 store_dir, Path(mods_dir), [live for live, _backup in choices]
@@ -684,7 +690,7 @@ def delete_folder_worker(
             file_count = sum(1 for item in old.rglob("*") if item.is_file())
         except OSError:
             file_count = 0
-        shutil.rmtree(old)
+        retry_on_lock(lambda: shutil.rmtree(old))
         log(f"Deleted '{old.name}' ({file_count} file(s))")
         parent_rel = rel.parent
         entry_prefix = "" if parent_rel == Path(".") else parent_rel.as_posix() + "/"
