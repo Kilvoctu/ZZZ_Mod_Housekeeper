@@ -25,11 +25,13 @@ LOWVARM_CHARACTERS_DIR_NAME = "角色hash表低显"
 FIX_TOOL_REPO_URL = "https://github.com/hefengchang/ZZZ-Model-Fix-Tool.git"
 
 _DUMP_SUBFOLDER = "版本修复工具/dump"
-_V2_DUMP_SUBFOLDER = "ZZZ_Index_Vertex_Fix_Tool_v2/Dump"
+_V2_DUMP_SUBFOLDER = "ZZZ_Index_Vertex_Fix_Tool/Dump"
 
 _TIMEOUT_SECONDS = 300
 _MARKER_NAME = ".zzzhashfix.json"
 _USER_AGENT = "ZZZModKeeper/1.0"
+# Extraction rules can change without the upstream repo moving; bump to re-extract.
+_EXTRACT_VERSION = 2
 
 
 class RepoError(RuntimeError):
@@ -123,13 +125,18 @@ def ensure_repo(
     """Ensure a local copy of the variant's data repo exists and is up to date.
 
     Existing copies are refreshed from the upstream archive (an ETag check skips
-    redundant downloads); an unrefreshable copy is kept as-is, and only a failed first download raises RepoError."""
+    redundant downloads unless the stored extraction version is stale); an unrefreshable copy is kept as-is, and only a failed first download raises RepoError."""
     target = Path(cache_dir) if cache_dir is not None else default_cache_dir(variant)
     info = REPO_VARIANTS[variant]
     if target.is_dir() and (target / _MARKER_NAME).is_file():
         try:
             remote = _head_etag(_archive_url(variant))
-            if remote and remote == _read_marker(target).get("etag"):
+            marker = _read_marker(target)
+            if (
+                remote
+                and remote == marker.get("etag")
+                and marker.get("extract") == str(_EXTRACT_VERSION)
+            ):
                 log(f"{variant}: up to date")
                 return target
             _download_archive(variant, target)
@@ -319,7 +326,9 @@ def _read_marker(cache_dir: Path) -> dict[str, str]:
 def _write_marker(
     cache_dir: Path, etag: str | None = None, sha: str = ""
 ) -> None:
-    marker: dict[str, str] = {"etag": etag} if etag else {}
+    marker: dict[str, str] = {"extract": str(_EXTRACT_VERSION)}
+    if etag:
+        marker["etag"] = etag
     if sha:
         marker["sha"] = sha
     (cache_dir / _MARKER_NAME).write_text(

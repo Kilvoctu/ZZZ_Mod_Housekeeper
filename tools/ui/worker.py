@@ -416,8 +416,9 @@ def fix_mod_worker(
                     log=log,
                     dumps=data.dumps,
                 )
+            refusals: list[str] = []
             for target in scan_v2_texcoord_targets(
-                paths[0], data.dumps, buffer_gate(data)
+                paths[0], data.dumps, buffer_gate(data), refusals=refusals
             ):
                 apply_upgrade(
                     target,
@@ -426,6 +427,8 @@ def fix_mod_worker(
                     log=log,
                     dumps=data.dumps,
                 )
+            for reason in refusals:
+                log(reason)
         return variant, plans, len(written_paths)
 
     return TaskWorker(job, log_kwarg="log", parent=parent)

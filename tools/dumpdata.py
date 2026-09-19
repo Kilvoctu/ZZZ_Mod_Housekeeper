@@ -1,13 +1,14 @@
 """Parse the ZZZ-Model-Fix-Tool dump data (版本修复工具/dump subfolder).
 
 Provenance: the dump repo (hefengchang/ZZZ-Model-Fix-Tool) ships one folder per component under 版本修复工具/dump, named ``<角色中文名>-<部件>`` possibly with extra dash qualifiers; each folder holds one JSON description plus its ``.buf`` binaries and the mesh ``.ib`` (face folders ship the JSON only), and a buffer's byte stride is the sum of its ``D3D11ElementList`` ``ByteWidth`` values (all elements share one ``ExtractSlot``).
-v2 schema: ``<cache>/v2/<MeshFolder>/`` pairs a ``hash.json`` entry list (deduped by ``position_vb``, first wins; skipped when no vb0 txt carries that hash) beside ``<Name>-vb0=<position_vb>.txt`` vertex dumps (``-ib=*.txt`` files ignored); the vb0 header gives the texcoord layout (COLOR first, then TEXCOORDs by index) and the vertex count, while the vertex body parses lazily via ``V2Dump.vertices``.
+v2 schema: ``<cache>/v2/<MeshFolder>/`` pairs a ``hash.json`` entry list (deduped by ``position_vb``, first wins; skipped when no vb0 txt carries that hash) beside ``<Name>-vb0=<position_vb>.txt`` vertex dumps (``-ib=*.txt`` files ignored); the vb0 header gives the texcoord layout (COLOR first, then TEXCOORDs by index) and the vertex count, while the vertex body parses lazily via ``V2Dump.vertices`` (per-slot TEXCOORD rows via ``V2Dump.texcoords``).
 """
 
 import json
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from math import isfinite
 from pathlib import Path
 
 from .characters import CharacterDB
@@ -32,6 +33,8 @@ _VB0Vertices = tuple[
     list[tuple[float, float, float]],
     list[tuple[tuple[float, ...], tuple[int, ...]]],
 ]
+
+_VB0Texcoords = dict[int, list[tuple[float, float] | None]]
 
 _ELEMENT_RE = re.compile(
     r"SemanticName:\s*(\w+)\s*\n\s*"
@@ -60,7 +63,7 @@ class V2Dump:
     """One v2 mesh reference: a hash.json entry plus its vb0 dump.
 
     ``char_latin``/``comp`` come from the mesh folder name; the hash fields
-    are lowercased ('' when absent); ``texcoord_format`` holds the texcoord tokens (COLOR first, then TEXCOORDs by index) or None without usable texcoord elements, ``texcoord_stride`` their byte width, ``vertex_count`` the header's declared count, and ``vertices`` lazily parses the vb0 body."""
+    are lowercased ('' when absent); ``texcoord_format`` holds the texcoord tokens (COLOR first, then TEXCOORDs by index) or None without usable texcoord elements, ``texcoord_stride`` their byte width, ``vertex_count`` the header's declared count, and ``vertices``/``texcoords`` lazily parse the vb0 body."""
 
     char_latin: str
     comp: str
@@ -73,6 +76,9 @@ class V2Dump:
     vertex_count: int
     vb0_path: Path | None
     _vertex_cache: _VB0Vertices | None = field(default=None, repr=False, compare=False)
+    _texcoord_cache: _VB0Texcoords | None = field(
+        default=None, repr=False, compare=False
+    )
 
     def vertices(self) -> _VB0Vertices:
         """(positions, blends) parsed from the vb0 body; cached after first call."""
@@ -80,6 +86,14 @@ class V2Dump:
         if cached is None:
             cached = _parse_vb0_vertices(self.vb0_path)
             self._vertex_cache = cached
+        return cached
+
+    def texcoords(self) -> _VB0Texcoords:
+        """{slot: per-vertex (u, v) or None} parsed from the vb0 body; cached after first call."""
+        cached = self._texcoord_cache
+        if cached is None:
+            cached = _parse_vb0_texcoords(self.vb0_path)
+            self._texcoord_cache = cached
         return cached
 
 
@@ -377,3 +391,43 @@ def _parse_vb0_vertices(path: Path | None) -> _VB0Vertices:
         [positions[key] for key in sorted(positions)],
         [(weights[key], indices[key]) for key in sorted(weights) if key in indices],
     )
+
+
+def _parse_vb0_texcoords(path: Path | None) -> _VB0Texcoords:
+    """TEXCOORD rows of one -vb0 body as {slot: per-vertex (u, v) or None}.
+
+    A bare ``TEXCOORD`` line or one with index 0 fills slot 0 and higher slots
+    carry their SemanticIndex; vertices lacking a slot's line or holding non-finite values stay None and unreadable files give {}."""
+    if path is None:
+        return {}
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    head, _sep, body = text.partition("vertex-data:")
+    count_match = _VERTEX_COUNT_RE.search(head)
+    total = int(count_match.group(1)) if count_match else 0
+    found: dict[int, dict[int, tuple[float, float]]] = {}
+    highest = -1
+    for match in _VERTEX_LINE_RE.finditer(body):
+        if match.group(3).upper() != "TEXCOORD":
+            continue
+        suffix = match.group(4)
+        index = int(match.group(1))
+        highest = max(highest, index)
+        try:
+            values = [float(value) for value in match.group(5).split(",")]
+        except ValueError:
+            continue
+        if len(values) < 2:
+            continue
+        u, v = values[0], values[1]
+        if not (isfinite(u) and isfinite(v)):
+            continue
+        slot = 0 if suffix in (None, "0") else int(suffix)
+        found.setdefault(slot, {})[index] = (u, v)
+    length = max(total, highest + 1)
+    return {
+        slot: [rows.get(index) for index in range(length)]
+        for slot, rows in sorted(found.items())
+    }
