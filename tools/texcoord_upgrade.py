@@ -1,7 +1,8 @@
 """Upgrade face texcoord .buf files to the post-2.54 float32 format.
 
-Game 2.54 switched face texcoord records from 36 bytes (first component as four packed UNORM8 bytes) to 48 bytes (the same component as four float32 values, byte / 255 — verified byte-exact against an author-shipped pair); each upgrade rewrites the buffer and its Resource stride line together and records a marker in the store's "_texcoord_upgrades.json" so an interrupted run never re-converts, and body/hair texcoords keep the old stride, so upgrades gate on face hashes and a still-36 stride with dump data routing and cross-checking.
-Beyond that fixed rule, ``scan_v2_texcoord_targets`` uses v2 dump layouts to upgrade buffers of any declared stride: the live buffer's real per-vertex size is matched against the dump's ``texcoord_format`` by shrinking one '4f' block to packed bytes or half floats (buffers with fewer chunks yet — old 2-UV faces — derive their layout from UV value ranges against the dump's vb0 TEXCOORD rows), and ``convert_bytes`` rewrites record by record — equal tokens pass through, only four-wide 4B/4e/4f pairs convert, anything else raises rather than guessing; a texcoord hash claimed by several dump folders is used only when all claiming dumps agree on its format and stride, conflicting claims are refused and noted (optional refusals out-list) rather than first-matched; format tokens are count+kind over the same table as tools.dumpdata ("4B" is 4 bytes, "4e" and "2f" are 8).
+Game 2.54 went from 36-byte records (first component four packed UNORM8 bytes) to 48
+bytes (four float32s, byte / 255); v2 scan also upgrades any-stride buffers via dump
+layouts; store markers stop re-conversion, tokens are count+kind over tools.dumpdata.
 """
 
 import json
@@ -48,8 +49,8 @@ class _ResourceBlock:
 class TexcoordTarget:
     """One face-texcoord buffer to upgrade, with the ini and override hash bound to it.
 
-    Legacy 36 -> 48 targets keep the default strides and no format tokens; v2
-    targets carry the dump-inferred old tokens, the dump's new tokens, their strides and a "char/comp" provenance source (fewer-chunks ones add the old-to-new element map)."""
+    Legacy 36 -> 48 targets keep the default strides and no format tokens; v2 targets
+    carry dump-inferred old/new tokens + strides and a "char/comp" source."""
 
     hash: str
     resource: str
@@ -90,8 +91,8 @@ def _fmt_stride(fmt: tuple[str, ...]) -> int:
 def upgrade_bytes(data: bytes) -> bytes:
     """36-byte packed-UNORM8 face texcoord records -> 48-byte float32 records.
 
-    The first four bytes of each record unpack to four little-endian float32
-    values (byte / 255.0), the remaining 32 bytes pass through unchanged; ValueError when the length is not a whole number of 36-byte records."""
+    The first four bytes unpack to four LE float32s (byte / 255.0), the other 32 bytes
+    pass through; ValueError on a length that is not whole 36-byte records."""
     if len(data) % _OLD_STRIDE:
         raise ValueError(f"texcoord buffer is not {_OLD_STRIDE}-byte aligned: {len(data)}")
     out = bytearray(len(data) // _OLD_STRIDE * _NEW_STRIDE)
@@ -141,8 +142,8 @@ def convert_bytes(
 ) -> bytes:
     """Convert texcoord records from ``old_fmt`` to ``new_fmt``, block by block.
 
-    Without ``element_map`` both formats need the same block count and blocks convert position by position; with it old block i lands on new position element_map[i] (one entry per old block, targets unique and in range) and untargeted new blocks zero-fill.
-    ``data`` needs whole old-stride records; equal tokens pass through byte-for-byte, supported numeric conversions pair the four-wide packed-UNORM8/float32/half16 blocks, anything else raises; records land exactly on the new stride."""
+    Blocks pair by position without ``element_map`` (equal counts); with it old block i
+    lands at element_map[i], untargeted zero-fill; only 4-wide 4B/4e/4f pairs convert."""
     if element_map is None:
         if len(old_fmt) != len(new_fmt):
             raise ValueError("old_fmt and new_fmt must have the same block count")
@@ -191,8 +192,8 @@ def infer_old_formats(
 ) -> list[tuple[str, ...]]:
     """Old layouts fitting ``per_vertex``: each '4f' block shrunk to 4B then 4e.
 
-    Candidates are tried left-to-right by block position, '4B' before '4e' within
-    a position, and kept only when their stride equals the real per-vertex byte size; empty when nothing matches."""
+    Candidates keep only when their stride equals ``per_vertex``, in block order; empty
+    when nothing matches."""
     candidates: list[tuple[str, ...]] = []
     for index, token in enumerate(new_fmt):
         if token != "4f":
@@ -209,7 +210,8 @@ def infer_old_formats(
 class DerivedLayout:
     """One fewer-chunks old layout: kept tokens, their new positions, unmatched marks.
 
-    ``old_format`` holds the kept tokens in order (any shrunk one already applied), ``element_map`` maps old block i onto new position element_map[i], and ``unmatched`` lists kept positions that are neither '2f' nor the shrunk one."""
+    ``old_format`` = kept tokens in order (shrunk one applied), ``element_map`` maps old
+    block i to new position element_map[i]; ``unmatched`` = kept non-'2f' positions."""
 
     old_format: tuple[str, ...]
     element_map: tuple[int, ...]
@@ -224,7 +226,8 @@ def layout_candidates(
 ) -> tuple[DerivedLayout, ...]:
     """Old fewer-chunks layouts fitting ``per_vertex``: kept token subsets, one '4f' shrunk.
 
-    Enumerates kept subsets of ``new_fmt`` (each kept '4f' may shrink to '4B' then '4e'), keeping only byte widths equal to ``per_vertex`` and deduping by (old_format, element_map); ``unmatched`` marks kept positions that are neither '2f' nor the shrunk one."""
+    Kept subsets of ``new_fmt`` whose byte width equals ``per_vertex``, deduped by
+    (old_format, element_map); ``unmatched`` marks kept non-'2f', non-shrunk positions."""
     sizes = [_token_width(token) for token in new_fmt]
     out: list[DerivedLayout] = []
     seen: set[tuple[tuple[str, ...], tuple[int, ...]]] = set()
@@ -270,7 +273,7 @@ def _value_range(
 ) -> tuple[float, float] | None:
     """(low, high) of the '2f' values at each record's ``offset``; None without any.
 
-    Non-finite values are skipped and a finite value of magnitude over 1e6 rejects the whole range."""
+    Non-finite values are skipped; a finite |value| over 1e6 rejects the whole range."""
     low: float | None = None
     high: float | None = None
     for index in range(count):
@@ -290,7 +293,8 @@ def chunk_uv_ranges(
 ) -> tuple[tuple[float, float] | None, ...]:
     """Per chunk: the (low, high) range of its float values, None for non-'2f' or implausible.
 
-    NaN and inf values are skipped (real buffers contain them); a finite value of magnitude over 1e6 marks the whole chunk implausible (the buffer is not cut that way)."""
+    NaN/inf are skipped (real buffers contain them); a finite |value| over 1e6 marks the
+    whole chunk implausible (wrong buffer cut)."""
     offsets = [0]
     for token in chunks:
         offsets.append(offsets[-1] + _token_width(token))
@@ -307,7 +311,7 @@ def chunk_uv_ranges(
 def _row_range(row: list[tuple[float, float] | None]) -> tuple[float, float] | None:
     """(low, high) over a slot's non-None (u, v) points; None without any usable value.
 
-    Non-finite values are skipped and a finite value of magnitude over 1e6 rejects the whole row."""
+    Non-finite values are skipped; a finite |value| over 1e6 rejects the whole row."""
     low: float | None = None
     high: float | None = None
     for point in row:
@@ -326,9 +330,10 @@ def _row_range(row: list[tuple[float, float] | None]) -> tuple[float, float] | N
 def dump_uv_ranges(
     entry: V2Dump,
 ) -> tuple[tuple[float, float] | None, ...] | None:
-    """Per texcoord token: the (low, high) range of its dump UV values, None without usable data.
+    """Per texcoord token: the (low, high) range of its dump UV values, None if unusable.
 
-    Aligned to ``entry.texcoord_format`` positions — '2f' tokens take the dump's TEXCOORD slots in order while COLOR and other tokens stay None; unusable UV data refuses entirely."""
+    '2f' tokens take the dump's TEXCOORD slots in order, other tokens stay None;
+    missing or unusable UV data refuses entirely."""
     fmt = entry.texcoord_format
     if fmt is None:
         return None
@@ -358,7 +363,8 @@ def match_uv_chunks_to_dump(
 ) -> dict[int, int] | None:
     """Match every mod UV chunk to a dump chunk: {dump position: old index}, None if unclear.
 
-    A mod chunk must fit inside the dump chunk's range within _LAYOUT_RANGE_EPS and the tightest fit wins; two equally tight fits cannot be told apart."""
+    Mod chunks must fit the dump chunk's range within _LAYOUT_RANGE_EPS; the tightest
+    fit wins, and equally tight fits refuse."""
     options: list[tuple[int, list[int]]] = []
     for old_index, mod_range in enumerate(mod_ranges):
         if mod_range is None:
@@ -398,7 +404,8 @@ def derive_missing_chunk_layout(
 ) -> DerivedLayout | None:
     """Old layout for a buffer with fewer chunks than the dump, or None on any refusal.
 
-    Candidates by byte size first; with usable dump UV data only those whose chunk ranges line up with it in the order the candidate claims survive, else a single unmatched-free candidate by size is trusted."""
+    With usable dump UV data only candidates whose chunk ranges line up with it in the
+    claimed order survive; else one unmatched-free candidate by size alone is trusted."""
     candidates = layout_candidates(entry.texcoord_format or (), per_vertex)
     if not candidates:
         return None
@@ -726,7 +733,8 @@ def _v2_ini_targets(
 ) -> list[TexcoordTarget]:
     """V2 targets bound by one ini's face-hash overrides over any-stride blocks.
 
-    Hashes claimed by several dump folders bind only when every claim agrees; a conflict refuses the hash and appends one reason to ``refusals`` per (ini, hash) when given."""
+    Hashes with conflicting multi-dump claims refuse and, when ``refusals`` is given,
+    append one reason per (ini, hash)."""
     lines = _ini_lines(ini_text)
     blocks = _resource_blocks(lines, None)
     targets: list[TexcoordTarget] = []
@@ -760,8 +768,8 @@ def scan_v2_texcoord_targets(
 ) -> list[TexcoordTarget]:
     """Deduped v2 texcoord targets: dump-declared formats over any-stride blocks.
 
-    Each face-hash override binding a Resource block pairs with the v2 dump whose ``texcoord_vb`` equals the hash (multi-dump claims bind only when they agree; conflicts are refused and noted in ``refusals`` when given), and the live buffer's real per-vertex size must infer to a convertible old layout (never the dump's own stride, never the legacy 36).
-    Missing or unusable buffers are skipped silently."""
+    Overrides pair with the v2 dump whose ``texcoord_vb`` equals the hash; the buffer's
+    real per-vertex size must infer a convertible old layout; unusable buffers skip."""
     targets: list[TexcoordTarget] = []
     seen: set[tuple[str, str]] = set()
     for ini in included_ini_files(Path(folder)):
@@ -935,8 +943,8 @@ def _apply_format_upgrade(
 ) -> bool:
     """Convert one v2 target's buffer to its dump-declared format; True when written.
 
-    There is no restore source for a v2 buffer, so a missing file only logs; an
-    existing buffer is converted block-by-block from the target's inferred old tokens to the dump's new tokens."""
+    No restore source for a v2 buffer, so a missing file only logs; an existing buffer
+    converts block-by-block from inferred old tokens to the dump's new tokens."""
     fmt_old = target.fmt_old
     fmt_new = target.fmt_new
     if fmt_old is None or fmt_new is None:
@@ -994,8 +1002,8 @@ def apply_upgrade(
 ) -> bool:
     """Upgrade one face-texcoord buffer and its Resource stride line; True when written.
 
-    Idempotent: once the marker's after-hash matches the live buffer only a still-old stride line is completed, and a buffer not aligned to the target's old stride is skipped with a log line; v2 targets (``fmt_new`` set) convert block-by-block via their dump-declared formats with no dump restore path.
-    Legacy targets route through dump data: a hash matched in the dump restores or cross-checks the dump's current texcoord binary (a missing buffer is restored from it); without a dump the conversion is unverified."""
+    Idempotent: a matching marker after-hash only completes a still-old stride line; v2
+    converts via dump formats, legacy restores/cross-checks the dump or is unverified."""
     mods_dir = Path(mods_dir)
     buf_path = Path(target.path)
     if target.fmt_new is not None:
@@ -1104,8 +1112,8 @@ def apply_upgrade(
 def marker_kind(store_dir: Path, mods_dir: Path, live_path: Path) -> str | None:
     """Fix-kind annotation for a live buffer from its upgrade marker; None without one.
 
-    "dump restore" marks a buffer whose bytes came verbatim from a fix-tool dump,
-    "buffer conversion" a genuinely converted one; a legacy marker without an "action" field predates the distinction and counts as a conversion."""
+    "dump restore" = bytes from a fix-tool dump, "buffer conversion" otherwise;
+    a legacy marker without an "action" field counts as a conversion."""
     marker = load_texcoord_state(store_dir, mods_dir).get(
         _state_key(mods_dir, live_path)
     )
@@ -1119,8 +1127,8 @@ def prune_texcoord_markers(
 ) -> int:
     """Drop upgrade markers of buffers a revert put back to pre-upgrade bytes.
 
-    A marker is dropped when its live .buf exists again with exactly the content the marker's "before" hash recorded (nothing converted remains on disk); non-.buf paths are ignored and unreadable live files are skipped.
-    The state file is rewritten at most once, only when something was dropped; returns the dropped count."""
+    A marker drops when the live .buf again matches its "before" hash; non-.buf and
+    unreadable files skip; state rewrites at most once, returns the dropped count."""
     state = load_texcoord_state(store_dir, mods_dir)
     if not state:
         return 0
@@ -1151,8 +1159,8 @@ def rewrite_texcoord_state_keys(
 ) -> int:
     """Rewrite applied-upgrade marker keys after a folder rename; returns the count changed.
 
-    Keys equal to old_prefix or under it swap that prefix; no-op without a marker file; a rewritten key overwrites a colliding existing key.
-    """
+    Keys equal to old_prefix or under it swap that prefix; no-op without a marker file;
+    a rewritten key overwrites a colliding existing key."""
     state = load_texcoord_state(store_dir, mods_dir)
     if not state or not old_prefix or old_prefix == new_prefix:
         return 0

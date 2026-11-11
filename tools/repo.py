@@ -42,8 +42,9 @@ class RepoError(RuntimeError):
 class RepoVariant:
     """One upstream data-repo variant.
 
-    ``hash`` kinds ship the hash datasets (changelog + character tables); the
-    ``dump`` kind ships the fix-tool vertex dumps, extracted into the cache root with the v2 tool's dumps under ``v2``."""
+    ``hash`` kinds ship the hash datasets (changelog + character tables);
+    ``dump`` ships the fix-tool vertex dumps, extracted to the cache root with
+    the v2 tool's dumps under ``v2``."""
 
     key: str
     repo_url: str
@@ -124,8 +125,9 @@ def ensure_repo(
 ) -> Path:
     """Ensure a local copy of the variant's data repo exists and is up to date.
 
-    Existing copies are refreshed from the upstream archive (an ETag check skips
-    redundant downloads unless the stored extraction version is stale); an unrefreshable copy is kept as-is, and only a failed first download raises RepoError."""
+    Existing copies refresh from the upstream archive (an ETag check skips
+    redundant downloads unless the stored extraction version is stale); an
+    unrefreshable copy is kept as-is; only a failed first download raises RepoError."""
     target = Path(cache_dir) if cache_dir is not None else default_cache_dir(variant)
     info = REPO_VARIANTS[variant]
     if target.is_dir() and (target / _MARKER_NAME).is_file():
@@ -268,7 +270,9 @@ def _extract_archive(
     """Unpack a GitHub zip archive, dropping its single top-level folder.
 
     With ``subfolder``, only members under ``<top>/<subfolder>/`` are unpacked and
-    their paths are rebased so the subfolder's contents land in the destination root; with ``exclude``, members whose rebased relative path is rejected are skipped."""
+    rebased so the subfolder's contents land in the destination root; ``exclude``
+    rejects members by their rebased relative path.
+    """
     with zipfile.ZipFile(io.BytesIO(archive)) as zf:
         members = zf.namelist()
         if not members:

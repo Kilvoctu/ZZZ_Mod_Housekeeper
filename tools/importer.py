@@ -11,9 +11,8 @@ from pathlib import Path
 
 LogFn = Callable[[str], None]
 
-# CREATE_NO_WINDOW suppresses console allocation for the 7z/Rar child
-# (no window flash from the GUI); 0 is a no-op where the constant
-# doesn't exist (non-Windows).
+# CREATE_NO_WINDOW suppresses console allocation for 7z/Rar children (no window
+# flash from the GUI); 0 where the constant doesn't exist (non-Windows).
 _SUBPROCESS_FLAGS = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
 
@@ -61,7 +60,8 @@ def _merge_staging(
     """Merge a staged extraction tree into destination; return files written.
 
     Applies the extract_zip layout rules: unsafe/junk members dropped, a
-    multi-top tree wrapped under ``stem``, existing files skipped (logged when given) unless ``replace``; files are moved with os.replace, so a same-volume staging tree costs no extra read/write pass."""
+    multi-top tree wrapped under ``stem``, existing files skipped (logged when
+    given) unless ``replace``; moves use os.replace (same-volume staging)."""
     members: list[str] = []
     for dirpath, _dirnames, filenames in os.walk(staging):
         for filename in filenames:
@@ -133,7 +133,9 @@ def _extract_external(
     """Extract a rar/7z archive via 7-Zip or WinRAR into a staging tree.
 
     Staging is created on the destination's volume so the merge is an atomic
-    rename instead of a cross-drive copy; layout rules match extract_zip (junk dropped, single-top kept, no overwrite unless replace) and the return value is the number of files written."""
+    rename instead of a cross-drive copy; layout rules match extract_zip (junk
+    dropped, single-top kept, no overwrite unless replace); returns files written.
+    """
     tool = _find_extractor()
     if tool is None:
         raise RuntimeError(

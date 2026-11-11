@@ -15,7 +15,7 @@ import sys
 import threading
 from collections import deque
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
 from typing import cast
@@ -188,7 +188,7 @@ _TREE_COLUMN_WIDTHS = ((0, 350), (1, 45), (2, 65), (3, 250))
 COLOR_UPDATED = QColor("#c47f00")
 COLOR_CURRENT = QColor(Qt.GlobalColor.darkGreen)
 COLOR_STRUCTURAL = QColor("#808080")
-COLOR_ACCENT = QColor("#5fb8ff")  # Rina-lightning accent: tree row highlight + title-bar busy wash
+COLOR_ACCENT = QColor("#5fb8ff")
 _DROP_TINT = QColor(
     COLOR_ACCENT.red(),
     COLOR_ACCENT.green(),
@@ -464,7 +464,7 @@ def _scope_has_backups(mods_dir: Path, store_dir: Path, scope_path: Path) -> boo
 
 def _stamp_text(stamp: int) -> str:
     """Human-readable local time for a fix backup's UTC-millisecond stamp."""
-    return datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
+    return datetime.fromtimestamp(stamp / 1000, tz=UTC).astimezone().strftime("%Y-%m-%d %H:%M")
 
 
 def _restored_geometry(raw: object) -> QByteArray | None:
@@ -822,7 +822,7 @@ def _mod_images(mod_dir: Path) -> list[Path]:
 
 
 def _unique_destination(folder: Path, name: str) -> Path:
-    """First non-existing path in folder for name, inserting ' (2)', ' (3)', ... before the suffix."""
+    """First non-existing path in folder for name, inserting ' (N)' before the suffix."""
     stem = Path(name).stem
     suffix = Path(name).suffix
     candidate = folder / name
@@ -1076,7 +1076,7 @@ class _ModInfoDialog(QDialog):
         layout: QVBoxLayout,
         conflicts: Sequence[ClaimConflict],
     ) -> None:
-        """Append a divider, the claim-conflicts header, and one row per conflict below existing rows."""
+        """Append a divider, the claim-conflicts header, and one row per conflict."""
         if not conflicts:
             return
         if layout.count() > 0:
@@ -1581,7 +1581,6 @@ class _PreviewGallery(QDialog):
             return
         menu = QMenu(self)
         menu.addAction("Set as preview image")
-        # Reset only applies to the promoted image itself.
         if self._current_image.name == self._promoted_name:
             menu.addAction("Reset preview image")
         menu.addSeparator()
@@ -1698,10 +1697,8 @@ class _PreviewGallery(QDialog):
 
 _RESIZE_MARGIN = 8
 
-# Tooltip thumbnails are area-normalized instead of box-fit: the scale makes
-# width * height hit ~220^2 = 48,400 px^2 (220x280 fits ~61.6k px^2 of a
-# 220x280-ratio image, so 48,400 is the like-for-like target), with a 300px
-# hard cap per dimension for extreme aspect ratios.
+# Tooltip thumbnails are area-normalized, not box-fit: scale so width * height
+# hits ~48,400 px^2 (like-for-like vs 220x280), 300px hard cap per dimension.
 _THUMB_AREA_PX = 48_400
 _THUMB_MAX_DIM_PX = 300.0
 
@@ -1709,15 +1706,13 @@ _THUMB_MAX_DIM_PX = 300.0
 class _RinaIcon(QLabel):
     """Animated Rina icon: random hover moves, breathing busy glow."""
 
-    # Fraction of its move each sparkle stays visible; starts span 0.0..0.4,
-    # so every star finishes before the move ends.
+    # Fraction of its move each sparkle stays visible; all finish before the end.
     _SPARKLE_SPAN = 0.6
 
     def __init__(self, pixmap: QPixmap, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._base = pixmap
-        # Normalize to logical pixels first: QIcon-sourced pixmaps carry a
-        # devicePixelRatio, so raw width alone over-scales on zoomed displays.
+        # QIcon pixmaps carry a devicePixelRatio; normalize to logical pixels first.
         ratio = pixmap.devicePixelRatio() or 1.0
         self._zoom = pixmap.width() / ratio / 24.0
         self._glow = 0.0
@@ -1976,7 +1971,6 @@ class _RinaIcon(QLabel):
             ))
         return points
 
-    # Random hover reactions: (name, duration_ms, per-tick update from t in 0..1).
     _MOVES = (
         ("rock", 450, _tick_rock),
         ("hop", 500, _tick_hop),
@@ -2038,7 +2032,7 @@ class _TitleBar(QWidget):
         self._close_button.setFixedSize(28, 28)
         self._close_button.clicked.connect(window.close)
         layout.addWidget(self._close_button)
-        # Segoe Fluent Icons / Segoe MDL2 Assets: ChromeMinimize, ChromeClose, ChromeRestore, ChromeMaximize.
+        # Glyphs: ChromeMinimize, ChromeClose, ChromeRestore, ChromeMaximize.
         glyph_font = QFont()
         glyph_font.setFamilies(["Segoe Fluent Icons", "Segoe MDL2 Assets"])
         glyph_font.setPointSize(9)

@@ -37,6 +37,7 @@ from ..blend_vote import (
 from ..claims import deference_specs
 from ..deferstate import record, undo_for_mod
 from ..dumpdata import DumpData, load_dump_data
+from ..face_conflict import apply_face_conflict_folder
 from ..fixer import (
     FilePlan,
     FixerData,
@@ -429,6 +430,12 @@ def fix_mod_worker(
                 )
             for reason in refusals:
                 log(reason)
+            written_paths.update(
+                str(p)
+                for p in apply_face_conflict_folder(
+                    paths[0], default_backups_dir(), Path(mods_dir), log=log
+                )
+            )
         return variant, plans, len(written_paths)
 
     return TaskWorker(job, log_kwarg="log", parent=parent)
@@ -619,7 +626,8 @@ def rename_folder_worker(
 ) -> TaskWorker:
     """Rename a mod or category folder on disk; presets, backups and blend markers follow.
 
-    ``kind`` selects the stored-entry form ("mod" leaf-cleaned, "category" on-disk); ``done`` carries the new Path.
+    ``kind`` selects the stored-entry form ("mod" leaf-cleaned, "category"
+    on-disk); ``done`` carries the new Path.
     """
 
     def job(log: LogFn) -> Path:

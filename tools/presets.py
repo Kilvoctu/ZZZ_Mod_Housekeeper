@@ -14,7 +14,7 @@ _DISABLED_PREFIX = "DISABLED_"
 
 
 def load_presets(root: Path | None = None) -> dict[str, list[str]]:
-    """Read {name: sorted enabled paths} from state.json; {} on missing, undecodable or non-dict JSON."""
+    """Read {name: sorted enabled paths} from state.json; {} on unreadable JSON."""
     presets: dict[str, list[str]] = {}
     section = load_state(root)["presets"]
     if isinstance(section, dict):
@@ -125,7 +125,8 @@ def retarget_preset_paths(
 ) -> int:
     """Rewrite stored entries for renamed folders; returns the changed count.
 
-    Entries equal to an old path or under it swap that prefix for the new one; mod renames match exactly, category renames cover nested entries.
+    Entries equal to an old path or under it swap that prefix for the new one;
+    mod renames match exactly, category renames cover nested entries.
     """
     valid: list[tuple[str, str]] = []
     for old, new in swaps:
@@ -163,7 +164,9 @@ def retarget_preset_paths(
 def remove_preset_paths(paths: Iterable[str], root: Path | None = None) -> int:
     """Remove stored entries for deleted mods or categories; returns the removed count.
 
-    A stored entry is removed when it equals one of the given paths or under it; exact matches cover mod deletions, prefix matches cover nested entries in category deletions. Presets that lose their last entry through this removal are deleted; presets that were already empty are kept.
+    Entries equal to a given path or under it are removed (exact = mod deletions,
+    prefix = nested category entries); emptied presets are deleted, already-empty
+    ones kept.
     """
     old_paths = [path.strip() for path in paths if path.strip()]
     if not old_paths:

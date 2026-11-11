@@ -60,6 +60,7 @@ INDEX_WARNING_KIND = "index_warning"
 WARNING_KINDS = frozenset({INDEX_WARNING_KIND})
 SECTION_DELETE_KIND = "delete_section"
 RABBITFX_KIND = "rabbitfx"
+SLOTFIX_KIND = "slotfix"
 _ANY_RUN_LINE_RE = re.compile(r"^\s*run\s*=", re.IGNORECASE)
 _DRAW_COMMAND_RE = re.compile(r"^\s*(?:draw|drawindexed|drawindexedcheat|drawraw)\b")
 _RESOURCE_BIND_RE = re.compile(r"^\s*(?:ib|vb\d+|ps-t\d+|this)\s*=")
@@ -111,8 +112,8 @@ def _collect_face_texcoord_hashes(
 ) -> frozenset[str]:
     """Every known face-texcoord hash for upgrade gating.
 
-    Sources: changelog face-block texcoord transitions (from and to) and the character table's
-    face-component texcoord fields, plus older chain steps whose to-hash reached that set (stale mods match too)."""
+    Sources: changelog face-texcoord transitions (from and to) and the character table's
+    face texcoord fields, plus chain steps whose to-hash reached the set (stale too)."""
     hashes: set[str] = set()
     if changelog_file is not None and changelog_file.is_file():
         transitions = parse_face_texcoord_transitions_file(changelog_file)
@@ -144,8 +145,9 @@ def load_fixer_data(
 ) -> FixerData:
     """Parse the data repo changelog and character JSONs into FixerData.
 
-    Legacy pre-2.0 history merges ahead of the changelog; ``include_pcdata`` ingests the importer dataset as hint-gated gap-fill (buffer-coupled hashes excluded); ``dumps`` attaches pre-parsed dump data.
-    ``repo_dir=None`` skips the changelog and character DB entirely while legacy chains, pcdata gap-fill and user patches still apply."""
+    Legacy pre-2.0 history merges ahead of the changelog; ``include_pcdata`` adds
+    hint-gated importer gap-fill (buffer-coupled hashes excluded); ``dumps`` pre-parses
+    dump data. ``repo_dir=None`` skips changelog + character DB; the rest still apply."""
     if repo_dir is None:
         real: list[ChangeEntry] = []
     else:
@@ -234,7 +236,7 @@ def load_fixer_data(
 def known_hashes(data: FixerData) -> set[str]:
     """Every hash the dataset can explain, lowercased.
 
-    Union of the character-DB reverse index, changelog chain sources and targets: anything scan/fix logic can classify."""
+    Union of character-DB reverse index and chain sources/targets the scan can classify."""
     known = set(data.db.reverse)
     known.update(data.chains)
     for entry in data.entries:
@@ -251,7 +253,7 @@ def known_hashes(data: FixerData) -> set[str]:
 def hash_is_outdated(h: str, data: FixerData, hint: str = "") -> bool:
     """Pessimistic changelog outdatedness for one hash.
 
-    True when chain resolution is ambiguous (None) or leads to a different hash; a round-trip
+    True when resolution is ambiguous (None) or ends on a different hash; round-trip
     means already current, and a matching hint fires hint-gated legacy edges."""
     resolved = resolve_hash_chain(h, hint, data)
     return resolved is None or bool(resolved)
@@ -264,7 +266,7 @@ def detect_variant(
 ) -> str | None:
     """Detect which dataset variant a scope's hashes belong to.
 
-    Scores count only exclusive matches; highest exclusive score wins, ties break by total
+    Scores count exclusive matches only; best exclusive score wins, ties break by total
     known hashes, no exclusive match returns None.  ``known`` precomputes sets."""
     if known is None:
         known = {variant: known_hashes(data) for variant, data in datasets.items()}
@@ -488,8 +490,8 @@ def _is_mesh_ib_rename(
 ) -> bool:
     """True when a hash rename renames a mesh IB whose binaries index vertices.
 
-    Table-driven: the character table's role-"ib" HashRef on the resolved-to hash decides;
-    chain steps with role "ib" are the fallback."""
+    Table-driven: a role-"ib" HashRef on the resolved-to hash decides; role-"ib" chain
+    steps are the fallback."""
     if any(entry.role == "ib" for entry in steps):
         return True
     return any(ref.role == "ib" for ref in data.db.reverse.get(new, []))
@@ -542,8 +544,8 @@ def _face_texcoord_repoint_target(
 ) -> str | None:
     """Current face texcoord hash an untracked texcoord override should use, or None.
 
-    Fires only when the section hint names a texcoord (and not an eyebrow) and the file also
-    overrides a known face IB; hash-named sections have no character token, so the face IB is the character evidence."""
+    Fires when the hint names a texcoord (not an eyebrow) and the file also overrides a
+    face IB; hash-named sections carry no character token, the face IB is the evidence."""
     if not hint or "texcoord" not in hint:
         return None
     if "eyebrow" in hint or "眉" in hint:
@@ -926,10 +928,10 @@ def _scan_structural_sections(
 def delete_section_suggestion(
     sec: _Section, file: str = "", reason: str = ""
 ) -> FixSuggestion:
-    """A delete_section suggestion removing one parsed section's header through its last body line.
+    """A delete_section suggestion spanning one parsed section's header through its body.
 
-    ``old`` snapshots the body lines through ``sec.end`` so apply_plan can re-validate the section
-    at apply time; the header is validated by name and blank lines after ``end`` stay in the file."""
+    ``old`` snapshots the body lines through ``sec.end`` for apply-time revalidation;
+    the header re-validates by name and blank lines after ``end`` stay in the file."""
     return FixSuggestion(
         file=file,
         section=sec.name,
@@ -950,8 +952,9 @@ def _hair_stem_name(name: str) -> str:
 def _unique_hair_list_name(base: str, taken: set[str], suffix: str = "Hair") -> str:
     """Case-insensitively unique CommandList name derived from a mod identity string.
 
-    ``base`` tokens (non-alphanumeric runs, first char capitalized) join with ``suffix``; a candidate colliding with
-    ``taken`` — the scope's lowered section names, compared bare and ``CommandList.``-prefixed — gets a numeric suffix, which the caller adds to ``taken``."""
+    ``base`` tokens (non-alphanumeric runs, capitalized) join with ``suffix``;
+    a candidate colliding with ``taken`` (scope's lowered section names, bare or
+    ``CommandList.``-prefixed) gets a numeric suffix the caller adds to ``taken``."""
     stem = "".join(
         token[:1].upper() + token[1:]
         for token in _HAIR_TOKEN_SPLIT_RE.split(base)
@@ -969,7 +972,7 @@ def _unique_hair_list_name(base: str, taken: set[str], suffix: str = "Hair") -> 
 
 
 def _hair_base(path: Path, scope_base: str) -> str:
-    """Mod identity for hair naming: passed-down scope folder name, else parent folder, else stem."""
+    """Mod identity for hair naming: scope folder name, else parent folder, else stem."""
     return scope_base or path.parent.name or path.stem
 
 
@@ -1005,10 +1008,10 @@ def _scan_hair_rewrite(
     taken: set[str] | None = None,
     base: str = "",
 ) -> list[FixSuggestion]:
-    """Guide-pattern hair rewrite for one file holding exactly one dispatch + one claim section (v1).
+    """Guide-pattern hair rewrite for one file with exactly one dispatch + claim (v1).
 
-    The dispatch's ``checktextureoverride = ib`` line becomes a run into a draw-gated CommandList pair from the claim body (hash/match/handling dropped); claim + stem-sharing texcoord section deleted.
-    A ``DRAW_TYPE == 2|4`` line anywhere in the claim's name-stem cluster (whole file when the stem has no separator) blocks the rewrite; cross-file pairs emit nothing."""
+    The dispatch's ``checktextureoverride = ib`` becomes a run into a draw-gated
+    CommandList pair from the claim body; a ``DRAW_TYPE == 2|4`` anywhere blocks it."""
     if taken is None:
         taken = {sec.name.strip().lower() for sec in sections}
     dispatches: list[tuple[_Section, int, str]] = []
@@ -1312,6 +1315,19 @@ _RABBITFX_NAMED_RE = re.compile(
     re.IGNORECASE,
 )
 
+_ZZMI_SLOT_KEYS = {
+    "ps-t3": "Diffuse",
+    "ps-t4": "NormalMap",
+    "ps-t5": "LightMap",
+    "ps-t6": "MaterialMap",
+}
+_ZZMI_SLOT_RUN = "run = CommandList\\ZZMI\\SetTextures"
+_ZZMI_SLOT_LINE_RE = re.compile(
+    r"^(?P<indent>\s*)ps-t(?P<slot>[3-6])\s*=\s*(?P<value>\S.*?)\s*$", re.IGNORECASE
+)
+_ZZMI_SLOT_GATE_RE = re.compile(r"^\s*ps-t[3-6]\s*=", re.IGNORECASE)
+_SLOTFIX_FILENAME_TOKENS = ("slotfix", "rabbitfx", "materia")
+
 
 def _rabbitfx_indent(content: str) -> str:
     """Leading whitespace of one ini line, verbatim."""
@@ -1387,8 +1403,8 @@ def _rabbitfx_named_fix(
 def _scan_rabbitfx(text: str, file: str = "") -> list[FixSuggestion]:
     """RabbitFX-format line fixes for decoded ini text.
 
-    Migrates legacy ``ps-t17``/``ps-t18`` slot binds and missing-``ref`` named binds to canonical
-    ``Resource\\RabbitFX\\...`` binds; [] when no ``rabbitfx`` token occurs anywhere (protects non-RabbitFX mods)."""
+    Migrates legacy ``ps-t17``/``ps-t18`` slot binds and missing-``ref`` named binds to
+    canonical ``Resource\\RabbitFX\\`` binds; [] without a ``rabbitfx`` token anywhere."""
     if "rabbitfx" not in text.lower():
         return []
     claimed = _rabbitfx_named_keys(text)
@@ -1408,6 +1424,180 @@ def _scan_rabbitfx(text: str, file: str = "") -> list[FixSuggestion]:
     return suggestions
 
 
+def _slotfix_block_span(contents: list[str], i: int) -> tuple[int, int] | None:
+    """(else, endif) 0-based indexes of the top-level if block opening at ``i``.
+
+    Only an outermost ``else`` counts; None without an ``else`` or a matching ``endif``."""
+    depth = 0
+    else_idx: int | None = None
+    for j in range(i, len(contents)):
+        stripped = contents[j].strip().lower()
+        if stripped.startswith("if "):
+            depth += 1
+        elif stripped.startswith("else"):
+            if depth == 1 and else_idx is None:
+                else_idx = j
+        elif stripped.startswith("endif"):
+            depth -= 1
+            if depth <= 0:
+                if else_idx is None:
+                    return None
+                return else_idx, j
+    return None
+
+
+def _slotfix_surgery_lines(contents: list[str]) -> set[int]:
+    """0-based indexes the upstream ps-t7 / $censor conditional surgery comments out.
+
+    ``if ps-t7 == 1`` comments ``if``..``else`` plus ``endif``; ``if $censor == 0``
+    comments ``if`` plus ``else``..``endif``; unmatched blocks are left alone."""
+    targets: set[int] = set()
+    i = 0
+    while i < len(contents):
+        stripped = contents[i].strip()
+        if not stripped or stripped.startswith(";"):
+            i += 1
+            continue
+        low = stripped.lower()
+        ps_t7 = "if ps-t7 == 1" in low
+        if not ps_t7 and "if $censor == 0" not in low:
+            i += 1
+            continue
+        span = _slotfix_block_span(contents, i)
+        if span is None:
+            i += 1
+            continue
+        else_idx, endif_idx = span
+        if ps_t7:
+            targets.update(range(i, else_idx + 1))
+            targets.add(endif_idx)
+        else:
+            targets.add(i)
+            targets.update(range(else_idx, endif_idx + 1))
+        i = endif_idx + 1
+    return targets
+
+
+def _slotfix_migrates(content: str) -> bool:
+    """True when one raw slot line actually migrates (not ``= null`` / ``ref``-prefixed)."""
+    match = _ZZMI_SLOT_LINE_RE.match(content)
+    if match is None:
+        return False
+    value = match.group("value").lower()
+    return value != "null" and not value.startswith("ref")
+
+
+def _slotfix_line_fix(
+    content: str, file: str, section: str, line_no: int
+) -> FixSuggestion | None:
+    """Named-bind migration for one raw ps-t3..t6 slot line, or None.
+
+    Indentation is preserved, the value is kept verbatim, and ``= null`` unbinds plus
+    ``ref``-prefixed values keep the original config."""
+    if not _slotfix_migrates(content):
+        return None
+    match = _ZZMI_SLOT_LINE_RE.match(content)
+    key = _ZZMI_SLOT_KEYS["ps-t" + match.group("slot")]
+    return FixSuggestion(
+        file=file,
+        section=section,
+        line_no=line_no,
+        kind=SLOTFIX_KIND,
+        old=content,
+        new=f"{match.group('indent')}Resource\\ZZMI\\{key} = ref {match.group('value')}",
+        labels="",
+        reason=f"migrate SlotFix {match.group('slot')} slot bind to named Resource\\ZZMI\\{key}",
+    )
+
+
+def _slotfix_comment_fix(
+    content: str, file: str, section: str, line_no: int
+) -> FixSuggestion:
+    """Branch-surgery comment-out fix for one ps-t7 / $censor conditional line."""
+    return FixSuggestion(
+        file=file,
+        section=section,
+        line_no=line_no,
+        kind=SLOTFIX_KIND,
+        old=content,
+        new=";" + content,
+        labels="",
+        reason="comment out inactive SlotFix conditional branch",
+    )
+
+
+def _slotfix_run_fix(
+    content: str, file: str, section: str, line_no: int
+) -> FixSuggestion:
+    """Dispatcher-run insertion after the last migrated bind of one slot group."""
+    return FixSuggestion(
+        file=file,
+        section=section,
+        line_no=line_no,
+        kind="insert_run",
+        old="",
+        new="",
+        labels="",
+        after_line=line_no,
+        insert_text=f"{_rabbitfx_indent(content)}{_ZZMI_SLOT_RUN}",
+        reason="insert SlotFix named-texture dispatcher after migrated slot binds",
+    )
+
+
+def _slotfix_group_ends(contents: list[str], idx: int, surgery: set[int]) -> bool:
+    """True when no further migrated slot bind follows ``idx`` before a significant line.
+
+    Blank, commented, surgery-targeted and unmigrated slot lines are transparent
+    (mirrors the upstream lookahead)."""
+    for j in range(idx + 1, len(contents)):
+        if j in surgery:
+            continue
+        stripped = contents[j].strip()
+        if not stripped or stripped.startswith(";"):
+            continue
+        if _ZZMI_SLOT_GATE_RE.match(contents[j]) is not None:
+            if _slotfix_migrates(contents[j]):
+                return False
+            continue
+        return True
+    return True
+
+
+def _scan_slotfix(text: str, file: str = "") -> list[FixSuggestion]:
+    """SlotFix texture/lighting migration fixes for decoded ini text.
+
+    Ports the upstream tool: raw ps-t3..t6 binds become named ``Resource\\ZZMI`` binds
+    with a group-trailing SetTextures run plus ps-t7/$censor surgery; [] without a raw
+    bind or for SlotFix/RabbitFX/Materia files (self-maintaining)."""
+    lowered = Path(file).name.lower()
+    if any(token in lowered for token in _SLOTFIX_FILENAME_TOKENS):
+        return []
+    contents = [_split_eol(line)[0] for line in text.splitlines(keepends=True)]
+    if not any(_ZZMI_SLOT_GATE_RE.match(content) for content in contents):
+        return []
+    surgery = _slotfix_surgery_lines(contents)
+    suggestions: list[FixSuggestion] = []
+    section = ""
+    for idx, content in enumerate(contents):
+        section_match = _SECTION_RE.match(content)
+        if section_match is not None:
+            section = section_match.group("name")
+            continue
+        stripped = content.strip()
+        if idx in surgery:
+            if stripped and not stripped.startswith(";"):
+                suggestions.append(_slotfix_comment_fix(content, file, section, idx + 1))
+            continue
+        if not stripped or stripped.startswith(";"):
+            continue
+        if not _slotfix_migrates(content):
+            continue
+        suggestions.append(_slotfix_line_fix(content, file, section, idx + 1))
+        if _slotfix_group_ends(contents, idx, surgery):
+            suggestions.append(_slotfix_run_fix(content, file, section, idx + 1))
+    return suggestions
+
+
 def _scan_file_details(
     path: Path,
     data: FixerData,
@@ -1417,8 +1607,8 @@ def _scan_file_details(
 ) -> tuple[str, str, list[FixSuggestion]]:
     """Read one .ini file and return (text, encoding, suggestions).
 
-    With a StructureData, structural and hair-rewrite suggestions are appended after the line-level ones;
-    ``taken`` (scope section names) and ``base`` (mod identity) feed the hair rewrite's unique CommandList naming and default to this file's own sections."""
+    With a StructureData, structural + hair-rewrite suggestions append after line-level
+    ones; ``taken``/``base`` feed hair CommandList naming, defaulting to the file's own."""
     text, encoding = _read_ini_details(path)
     sections = _parse_sections(text)
     suggestions = _scan_text(text, data, file=str(path))
@@ -1433,6 +1623,7 @@ def _scan_file_details(
         if suggestion.line_no not in covered
     )
     suggestions.extend(_scan_rabbitfx(text, file=str(path)))
+    suggestions.extend(_scan_slotfix(text, file=str(path)))
     if structure is not None:
         suggestions.extend(
             _scan_structural_sections(sections, structure, file=str(path))
@@ -1457,7 +1648,7 @@ def _scan_file(
 
 
 def _iter_texture_override_hash_lines(text: str) -> Iterator[tuple[str, str]]:
-    """Yield (lowercased hash, normalized section hint) from TextureOverride sections in decoded ini text."""
+    """Yield (lowercased hash, normalized hint) from decoded TextureOverride sections."""
     section = ""
     in_texture_override = False
     for line in text.splitlines(keepends=True):
@@ -1511,8 +1702,8 @@ _INI_PARSE_MEMO: OrderedDict[tuple[str, int, int], tuple[str, dict, list]] = Ord
 def cached_ini_parse(path: Path) -> tuple[str, dict, list] | None:
     """(text, hints, sections) for a .ini file, memoized across analysis runs.
 
-    Keyed by (path, st_mtime_ns, st_size) in an LRU OrderedDict capped at ``_INI_PARSE_MEMO_CAP`` (hits move to the end, oldest evicted past the cap); os.stat OSError and read OSError (a directory path stats fine but read fails) return None; undecodable bytes raise ValueError — failures are never memoized; no locking (only one TaskWorker runs at a time).
-    scan_folder/scan_files/_scan_file_details stay unwired on purpose: apply_plan writes back via the raw ``encoding`` only _scan_file_details decodes, and its ``write_bytes`` bumps the mtime (a natural memo miss anyway)."""
+    Keyed by (path, mtime_ns, size), LRU-capped; OSError -> None, bad decode raises,
+    failures never memoize, unlocked; scan_* stays unwired (apply_plan bumps mtime)."""
     try:
         stat = Path(path).stat()
     except OSError:
@@ -1536,8 +1727,8 @@ def cached_ini_parse(path: Path) -> tuple[str, dict, list] | None:
 def collect_texture_override_hashes(path: Path) -> list[str]:
     """Unique lowercased hash values from `hash =` lines inside [TextureOverride…] sections.
 
-    Non-TextureOverride sections are ignored, so shader and stray hashes are excluded; hashes are
-    sorted ascending, [] for unreadable or undecodable files."""
+    Non-TextureOverride sections are ignored (no shader/stray hashes); results sort
+    ascending, [] for unreadable or undecodable files."""
     try:
         text = read_ini_text(path)
     except (ValueError, OSError):
@@ -1548,8 +1739,8 @@ def collect_texture_override_hashes(path: Path) -> list[str]:
 def collect_texture_override_hints(path: Path) -> dict[str, set[str]]:
     """Map each TextureOverride hash to the normalized section hints it appears under.
 
-    Same sections and ``hash =`` lines as collect_texture_override_hashes (one hint per section);
-    {} for unreadable or undecodable files."""
+    ``hash =`` lines as collect_texture_override_hashes, one hint per section; {} for
+    unreadable or undecodable files."""
     try:
         return ini_hints(read_ini_text(path))
     except (ValueError, OSError):
@@ -1563,8 +1754,8 @@ def _deference_suggestions(
 ) -> dict[str, list[FixSuggestion]]:
     """Cross-mod deference edits per file path: defer wraps and vertex-count unifies.
 
-    The fixes are relational (both conflicting mods must be patched in one scope), so only scan_folder calls this; per-mod scan_files emits none. Pre-computed specs skip the claims pass.
-    Anchors use the claims parse's original line numbers (open at the section header, close at its last body line)."""
+    Relational (both conflicting mods patch in one scope), so only scan_folder calls it;
+    pre-computed specs skip the claims pass; anchors keep the claims line numbers."""
     per_file: dict[str, list[FixSuggestion]] = {}
     if wraps is None or unifies is None:
         from .claims import deference_specs  # local import: claims imports this module
@@ -1621,8 +1812,8 @@ def scan_folder(
 ) -> list[FilePlan]:
     """Scan every .ini under mods_dir recursively and return non-empty plans.
 
-    Skips files or path components named DISABLED_versionfix_/DISABLED_BACKUP_ (genuine DISABLED-named files still scan); a StructureData appends structural, hair-rewrite and cross-mod
-    deference suggestions — relational (both conflicting mods must be patched in one folder scope), so per-mod scan_files emits none — and names hair CommandLists after mods_dir (unique across the scope)."""
+    Skips only DISABLED_versionfix_/DISABLED_BACKUP_ names, not genuine DISABLED_ files;
+    a StructureData adds structural, hair-rewrite, deference; hair names from mods_dir."""
     mods_dir = Path(mods_dir)
     paths = list(included_ini_files(mods_dir))
     taken = _scope_section_names(paths) if structure is not None else None
@@ -1648,8 +1839,8 @@ def scan_files(
 ) -> list[FilePlan]:
     """Scan explicit .ini file paths (no directory recursion, no gating).
 
-    Skips undecodable or unreadable files and directories; a StructureData appends structural and hair-rewrite suggestions,
-    naming hair CommandLists after each file's parent folder (unique across the scope's files)."""
+    Skips undecodable/unreadable files and dirs; a StructureData adds structural +
+    hair-rewrite suggestions, hair CommandLists named after each file's parent folder."""
     checked: list[Path] = []
     for path in paths:
         path = Path(path)
@@ -1702,7 +1893,7 @@ def _replace_on_line(content: str, suggestion: FixSuggestion) -> str | None:
         if match is None or match.group("value") != suggestion.old:
             return None
         return content[: match.start("value")] + suggestion.new + content[match.end("value"):]
-    if suggestion.kind in (HAIR_DISPATCH_KIND, DEFER_UNIFY_KIND, RABBITFX_KIND):
+    if suggestion.kind in (HAIR_DISPATCH_KIND, DEFER_UNIFY_KIND, RABBITFX_KIND, SLOTFIX_KIND):
         if content != suggestion.old:
             return None
         return suggestion.new
@@ -1714,7 +1905,7 @@ def _delete_section_span(
 ) -> tuple[int, int] | None:
     """(start, end) original line numbers of a delete_section target, or None when stale.
 
-    The header at ``line_no`` must parse as ``[suggestion.section]`` and the body lines through
+    The header at ``line_no`` must parse as ``[suggestion.section]``; body through
     ``after_line`` must still equal the scanned ``old`` snapshot."""
     start, end = suggestion.line_no, suggestion.after_line
     if not 1 <= start <= end <= len(lines):
@@ -1738,8 +1929,8 @@ def _apply_section_deletes(
 ) -> int:
     """Apply delete_section suggestions last, highest original line first.
 
-    Stale ranges (section moved or content drifted) and overlapping duplicates are logged as
-    skipped and left in place; returns the number of deletes applied."""
+    Stale ranges (section moved or content drifted) and overlapping duplicates log as
+    skipped and stay in place; returns the number of deletes applied."""
     applied = 0
     removed: list[tuple[int, int]] = []
     for suggestion in sorted(deletes, key=lambda s: s.line_no, reverse=True):
@@ -1770,8 +1961,8 @@ def apply_plan(
 ) -> bool:
     """Apply one file's fixes, backing up the original.  Returns True when written.
 
-    The file is re-scanned first by default (``suggestions`` skips the scan); ``backup=False`` writes
-    without a new backup (fixpoint pass 2+); section deletes apply last, highest original line first."""
+    Re-scans first (``suggestions`` skips it); ``backup=False`` skips the backup
+    (fixpoint pass 2+); section deletes apply last, highest original line first."""
     path = Path(plan.path)
     if suggestions is None:
         text, encoding, suggestions = _scan_file_details(path, data, structure)

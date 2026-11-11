@@ -269,7 +269,8 @@ def parse_ini_info(text: str, display_path: str = "") -> ModIniInfo:
 def scan_mod_info(mod_dir: Path) -> list[ModIniInfo]:
     """Mod-info facts for every included .ini under mod_dir, in order.
 
-    Files failing to decode are skipped; display paths are mod_dir-relative posix, falling back to the absolute string path.
+    Files failing to decode are skipped; display paths are mod_dir-relative
+    posix, falling back to the absolute string path.
     """
     mod_dir = Path(mod_dir)
     infos: list[ModIniInfo] = []
@@ -289,7 +290,8 @@ def scan_mod_info(mod_dir: Path) -> list[ModIniInfo]:
 def read_mod_author(mod_dir: Path) -> str | None:
     """Author string from mod.json inside mod_dir, or None.
 
-    Returns None for a missing, unparsable or non-object file, or when the author value is missing, empty or "unknown" (case-insensitive).
+    None for a missing, unparsable or non-object file, or when the author value
+    is missing, empty or "unknown" (case-insensitive).
     """
     mod_dir = Path(mod_dir)
     path = mod_dir / "mod.json"

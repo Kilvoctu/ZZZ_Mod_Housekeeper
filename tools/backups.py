@@ -1,7 +1,7 @@
 """App-local fix-backup store and backup-name helpers.
 
-Fix backups live outside the mods folder, in one per-mods-folder store directory under the app-local backups dir whose tree mirrors the mods folder's tree keyed on the CANONICAL relative path: a leading "DISABLED_" is stripped from every DIRECTORY component (any level) while the FILENAME is never canonicalized, so one logical file keeps a single merged history across mod-manager toggles. New backups are named "{live name} -- {YYYY-MM-DD HH.MM.SS}.bak" (collisions get " (2)", " (3)" ... before ".bak") while legacy backups keep the "DISABLED_versionfix_<utc millis>-<name>" convention, and same-stamp chain ties order by that dup suffix, then filename.
-Decoding a store path resolves the ACTUAL current file for the canonical key: the canonical live path (mods_dir / <canonical dirs> / <name>) when it exists; otherwise, for shallow trees (at most 4 directory components), the first existing path that re-prefixes "DISABLED_" onto a subset of those components; otherwise the canonical live path, which revert can still recreate.
+One store dir per mods folder under backups/, mirroring the mods tree by canonical key:
+DISABLED_ is stripped from directory parts only, so one file keeps one merged history.
 """
 
 import os
@@ -9,7 +9,7 @@ import re
 import shutil
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from hashlib import sha1
 from pathlib import Path
 
@@ -40,7 +40,8 @@ def default_backups_dir() -> Path:
 def folder_key(mods_dir: Path) -> str:
     """Stable per-mods-folder key: sanitized root name + 8-char digest.
 
-    Non-[A-Za-z0-9_-] chars become "_" (empty name -> "mods"); the digest covers the mods path relative to the app root when it lives inside it, and the absolute path otherwise.
+    Non-[A-Za-z0-9_-] chars become "_" (empty name -> "mods"); the digest hashes the
+    mods path relative to the app root when inside it, else the absolute path.
     """
     return _digest_key(mods_dir, _key_input(mods_dir))
 
@@ -74,7 +75,8 @@ def store_root(store_dir: Path, mods_dir: Path) -> Path:
 def migrate_store_key(store_dir: Path, mods_dir: Path) -> None:
     """Adopt the pre-relocation (absolute-key) store when it exists.
 
-    Renames the legacy-key store folder to the current key when the current-key folder is absent; no-op otherwise.
+    Renames the legacy-key store folder to the current key when the current-key folder
+    is absent; no-op otherwise.
     """
     legacy = Path(store_dir) / _legacy_folder_key(mods_dir)
     current = Path(store_dir) / folder_key(mods_dir)
@@ -95,7 +97,8 @@ def store_folder_for_mod(store_dir: Path, mods_dir: Path, mod_path: Path) -> Pat
 def store_folder_to_open(store_dir: Path, mods_dir: Path, mod_path: Path) -> Path:
     """Folder to open for a mod's backups: the mod's store folder when it exists.
 
-    Falls back to the store root, then the store dir; when none of them exist the mods folder is returned so the caller always opens something sensible.
+    Falls back to the store root, then the store dir; when none exist the mods folder is
+    returned so the caller always opens something.
     """
     store_dir = Path(store_dir)
     candidates = (
@@ -114,7 +117,8 @@ def retarget_store_folder(
 ) -> bool:
     """Move the canonical store mirror folder for a renamed folder; True when moved.
 
-    Relative paths are canonicalized like store keys; False when the source is absent, the target exists, or both paths coincide.
+    Relative paths are canonicalized like store keys; False when the source is absent,
+    the target exists, or both paths coincide.
     """
     old_store = store_root(store_dir, mods_dir).joinpath(
         *_canonical_dirs(Path(old_rel).parts)
@@ -143,7 +147,8 @@ def delete_store_folder(store_dir: Path, mods_dir: Path, rel: Path) -> bool:
 def prune_empty_store_folders(store_dir: Path, mods_dir: Path) -> int:
     """Remove every empty directory under the mods folder's store root; returns the count.
 
-    Consumed backups leave their mirror directories behind; a bottom-up sweep deleting only truly empty directories (deepest first, store root itself never removed) cleans those leftovers without touching live backups, sibling mods, or other mods folders.
+    Consumed backups leave mirror directories behind; a deepest-first sweep deletes only
+    truly empty directories and never the store root itself.
     """
     root = store_root(store_dir, Path(mods_dir))
     if not root.is_dir():
@@ -170,7 +175,8 @@ def prune_store_backups_newer_than(
 ) -> int:
     """Delete store backups of ``live`` newer than ``chosen``; returns count dropped.
 
-    Walks chosen.parent (the canonical store folder), decodes each sibling .bak via ``_decode_backup_name`` and unlinks those sharing ``live.name`` with a strictly greater (stamp, dup) ordering key; unparseable/foreign files and other live names stay, per-file failures are logged and never raised."""
+    Walks chosen.parent, unlinks decoded siblings of ``live`` whose (stamp, dup) key is
+    strictly greater; unparseable files and other live names stay; failures only log."""
     decoded = _decode_backup_name(Path(chosen).name)
     if decoded is None or decoded[1] != Path(live).name:
         return 0
@@ -197,15 +203,17 @@ _DISABLED_TOGGLE = "DISABLED_"
 def _canonical_dirs(dirs: Sequence[str]) -> tuple[str, ...]:
     """Directory components with a leading DISABLED_ stripped (canonical store key).
 
-    This is the canonical form both store writes and store reads key on, so a file's history merges into one chain across mod-manager DISABLED_ toggles at any directory level. Only directories: the filename is never canonicalized (files named DISABLED_x.ini keep exact keying).
+    Both store writes and reads key on this form, so one file's history merges across
+    DISABLED_ toggles at any directory level; filenames are never canonicalized.
     """
     return tuple(part.removeprefix(_DISABLED_TOGGLE) for part in dirs)
 
 
 def _resolve_live_path(mods_dir: Path, canonical_dirs: Sequence[str], name: str) -> Path:
-    """The actual current file for a canonical store path (see module docstring).
+    """The actual current file for a canonical store path.
 
-    The canonical live path when it exists; otherwise, for at most 4 directory components, the first existing path that re-prefixes DISABLED_ onto a subset of them (masks 1..2^k-1 in ascending numeric order, so component 0 toggles first); otherwise the canonical live path, which may not exist (revert recreates it).
+    The canonical live path when it exists; else, for up to 4 directory components, the
+    first that exists re-prefixing DISABLED_ on a subset; else the canonical path.
     """
     canonical = mods_dir.joinpath(*canonical_dirs, name)
     if canonical.exists():
@@ -235,7 +243,7 @@ def backup_path_for(
         raise ValueError(f"{live_path} is not under {mods_dir}") from None
     if not rel.parts:
         raise ValueError(f"{live_path} is not strictly under {mods_dir}")
-    local = datetime.fromtimestamp(stamp / 1000, tz=timezone.utc).astimezone().strftime("%Y-%m-%d %H.%M.%S")
+    local = datetime.fromtimestamp(stamp / 1000, tz=UTC).astimezone().strftime("%Y-%m-%d %H.%M.%S")
     rel_dirs = rel.parent.parts
     store_folder = store_root(store_dir, mods_dir).joinpath(*_canonical_dirs(rel_dirs))
     destination = store_folder / f"{live_path.name} -- {local}.bak"
@@ -249,7 +257,8 @@ def backup_path_for(
 def parse_store_backup_name(filename: str) -> tuple[int, str] | None:
     """Decode one new-scheme store backup filename.
 
-    Returns (stamp millis, live filename) for a "{name} -- YYYY-MM-DD HH.MM.SS[ (dup)].bak" file, or None otherwise. The timestamp parses as local time (matching how it was written), so a DST fall-back duplicate maps to the same epoch second. Legacy DISABLED_versionfix_<stamp>-<name> files never match here; read them with BACKUP_NAME_RE.
+    Returns (stamp millis, live filename) for "{name} -- YYYY-MM-DD HH.MM.SS[ (n)].bak",
+    parsed as local time; legacy DISABLED_versionfix_ names never match here.
     """
     match = STORE_BACKUP_NAME_RE.match(filename)
     if match is None:
@@ -263,7 +272,8 @@ def parse_store_backup_name(filename: str) -> tuple[int, str] | None:
 def _decode_backup_name(filename: str) -> tuple[int, str, int] | None:
     """(stamp millis, live filename, dup index) under either scheme, else None.
 
-    New-scheme names ("{name} -- when[ (n)].bak") parse as local time (a DST fall-back duplicate maps to the same epoch second); the dup index is the " (n)" suffix, 0 for a plain name. Legacy DISABLED_versionfix_<stamp>-<name> names parse via BACKUP_NAME_RE with dup index 0. None is returned when neither scheme matches (e.g. foreign backups), so callers skip those.
+    New-scheme ("{name} -- when[ (n)].bak") parses as local time (a DST fall-back dup
+    maps to one epoch second), dup = " (n)" or 0; legacy versionfix_ names give dup 0.
     """
     match = STORE_BACKUP_NAME_RE.match(filename)
     if match is not None:
@@ -281,7 +291,8 @@ def _decode_backup_name(filename: str) -> tuple[int, str, int] | None:
 def _backup_candidates(store_dir: Path, recursive: bool = False) -> list[Path]:
     """*.ini and *.bak files in store_dir, sorted by string path.
 
-    ``recursive`` walks subdirectories too (collect_backup_chains scans the whole store tree); the default lists direct children only (collect_backup_chains_for scans one file's canonical dir).
+    ``recursive`` walks subdirectories too (whole-store scans); the default lists direct
+    children only (one file's canonical dir).
     """
     if recursive:
         found = (*store_dir.rglob("*.ini"), *store_dir.rglob("*.bak"))
@@ -313,7 +324,8 @@ def is_backup_path(parts: tuple[str, ...]) -> bool:
 def included_ini_files(root: Path) -> Iterator[Path]:
     """Every .ini under root that is not backup-named, sorted.
 
-    Yields each *.ini under root recursively, sorted by string path, whose relative-path parts pass is_backup_path: the filename or any directory component starts with none of the backup conventions.
+    Yields *.ini under root recursively, sorted, whose relative parts pass
+    is_backup_path: no backup-convention filename or directory component.
     """
     for path in sorted(root.rglob("*.ini"), key=lambda item: str(item)):
         if not is_backup_path(path.relative_to(root).parts):
@@ -323,7 +335,8 @@ def included_ini_files(root: Path) -> Iterator[Path]:
 def move_file(src: Path, dst: Path) -> None:
     """Move src to dst, cross-volume safe.
 
-    Tries os.replace first; when that fails (e.g. across volumes), creates dst's parent, copies src to dst (metadata kept, symlinks not followed) and removes src.
+    Tries os.replace first; on failure (cross-volume) creates dst's parent, copies
+    src (metadata kept, symlinks not followed) and removes it.
     """
     src = Path(src)
     dst = Path(dst)

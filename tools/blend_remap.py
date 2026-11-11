@@ -1,6 +1,8 @@
 """Remap bone indices in stride-32 blend .buf files bound by blend draw sections.
 
-Game skeleton updates renumber bone indices; a mod's blend draw `hash =` line gets re-pointed to the current hash while its own .buf still carries the old numbering, so skinning breaks. This module ports VgRemapper's ini parsing: it finds the buffers bound by matching draw sections, remaps their per-vertex little-endian uint32 bone indices, and backs the original bytes up into the app's fix-backup store. The mappings are not involutions (68->127 while 127->126), so an applied marker in the store's "_blend_remaps.json" prevents double application from corrupting the data. The bound resource name is compared case-insensitively, a slight deliberate leniency over the C# reference's ordinal comparison.
+Game updates renumber bones, so a re-pointed hash line leaves its .buf stale; the
+non-involutive remap relies on the store marker to prevent double application.
+Per vertex: 4 float32 weights then 4 little-endian uint32 bone indices, stride 32.
 """
 
 import json
@@ -210,7 +212,8 @@ def scan_blend_targets(
 ) -> list[BlendTarget]:
     """Deduped blend targets across every includable .ini under folder.
 
-    A .buf bound by several distinct blend hashes is a shared pre-split buffer no single table can safely remap, so all of its targets are refused (one log line per refused path when log is given).
+    A .buf bound by several blend hashes is shared data no one table can remap; each
+    such target is refused, one log line per refused path when log is given.
     """
     targets: list[BlendTarget] = []
     seen: set[tuple[str, Path]] = set()
@@ -322,7 +325,8 @@ def rewrite_blend_state_keys(
 ) -> int:
     """Rewrite applied-remap marker keys after a folder rename; returns the count changed.
 
-    Keys equal to old_prefix or under it swap that prefix; no-op without a marker file; a rewritten key overwrites a colliding existing key.
+    Keys equal to old_prefix or under it swap that prefix; no-op without a marker file;
+    rewritten key overwrites a colliding existing key.
     """
     state = load_blend_state(store_dir, mods_dir)
     if not state or not old_prefix or old_prefix == new_prefix:
@@ -364,7 +368,8 @@ def remove_blend_state_keys(store_dir: Path, mods_dir: Path, prefix: str) -> int
 def blend_marker_kind(store_dir: Path, mods_dir: Path, live_path: Path) -> str | None:
     """Fix-kind annotation for a live blend from its marker; None without one.
 
-    "blend remap (vote)" marks a buffer remapped from dump data by the vote pass, "blend remap (table)" one remapped from the shipped tables; a legacy marker without an "action" field predates the distinction and counts as a table remap.
+    A "vote" or "grid" action marks a dump-data vote remap; anything else counts as
+    a table remap from the shipped tables.
     """
     marker = load_blend_state(store_dir, mods_dir).get(
         blend_state_key(mods_dir, live_path)
@@ -383,7 +388,8 @@ def prune_blend_markers(
 ) -> int:
     """Drop markers of blends a revert put back to pre-remap bytes; returns the count dropped.
 
-    A marker is dropped when its live .buf exists again with exactly the content the marker's "before" hash recorded, i.e. nothing remapped remains on disk; non-.buf paths are ignored, unreadable live files are skipped, and the state file is rewritten at most once, only when something was dropped.
+    A marker is dropped when the live .buf again matches the marker's "before" content;
+    non-.buf paths are ignored, unreadable files skipped; state rewrites at most once.
     """
     state = load_blend_state(store_dir, mods_dir)
     if not state:

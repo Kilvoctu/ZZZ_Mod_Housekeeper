@@ -1,7 +1,8 @@
 """Cross-mod shared-hash claim conflict detection for 3dmigoto mod ini files.
 
-Enabled mods claiming the same mesh hash without an interlocking ``$var`` handshake, stomping the same override property or buffer slot, or dispatching via ``checktextureoverride`` yield conflict rows.
-Mods matching the dynamic dispatch hair pattern that the Fix action can convert are reported as fixable info rows.
+Enabled mods conflict when they claim the same mesh hash without an interlocking
+``$var`` handshake, stomp the same override property/buffer slot, or dispatch via
+``checktextureoverride``; hair dispatches convertible by Fix report as info rows.
 """
 
 from __future__ import annotations

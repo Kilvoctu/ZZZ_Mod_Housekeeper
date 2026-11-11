@@ -1,7 +1,7 @@
-"""Dev-only generator: harvest legacy hash-update chains from the 100 reference
-per-character modules of ZZZ-Mod-Fixer into data/legacy_chains.json (mock-importing ``get_hash_commands``, dropping keys coupled to buffer/vertex/index content or to destructive comment/remove classes, and pairing ``log``/``update_hash`` entries into (from, to, label) transitions kept per character).
-
-The companion exclusion file data/buffer_coupled_hashes.json records the buffer-coupled keys for the tools/pcdata.py gap-fill. Run:  python tools/generate_legacy_chains.py
+"""Dev-only generator: harvest legacy hash chains from ZZZ-Mod-Fixer's reference
+modules into data/legacy_chains.json, pairing ``log``/``update_hash`` entries
+into (from, to, label) transitions per character; buffer-coupled keys drop to
+data/buffer_coupled_hashes.json.  Run:  python tools/generate_legacy_chains.py
 """
 
 import importlib.util
@@ -75,7 +75,9 @@ def load_module(path: Path):
 def harvest_key(key: str, entries: list[tuple[type, tuple[Any, ...]]]) -> tuple[list[tuple[str, str, str]], str | None]:
     """Walk one hash key's command list in order.
 
-    Returns (transitions, skip_reason): transitions are (from, to, label) triples and skip_reason is None when the key yielded transitions (or was a pure tolerated no-op) and one of "buffer-coupled"/"non-chain"/"undated"/"malformed" when the whole key must be dropped; arrow logs "A -> B: ..." and dash-range logs "A - B: ..." arm or re-arm pending as label "A -> B" (ranges normalized to the arrow form), and single-version logs "A: ..." arm pending only when nothing is armed yet.
+    Returns (transitions, skip_reason): (from, to, label) triples, or a skip reason:
+    buffer-coupled / non-chain / undated / malformed.  Arrow and dash-range logs
+    arm or re-arm pending as label "A -> B"; singles arm only when unarmed.
     """
     for entry in entries:
         cls_name = getattr(entry[0], "__name__", None)

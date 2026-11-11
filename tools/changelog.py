@@ -1,6 +1,8 @@
 """Parse the Chinese changelog of the ZZZ-Model-Hash repo (Hash变动日志.txt).
 
-The changelog is a hand-maintained UTF-8 text file listing model hash changes, newest version section first.  Recognized line shapes: version sections (``版本 3.1 -> 3.11``; the arrow may also be ``→``), character groups (``【名字1/名字2】``), IB lines (``IB: <hash> -> <hash>（label）``, several specs separated by ``/``, with optional ``※ ...`` notes) and child lines (``<role>: <old> -> <new>``, including ``object_indexes: [0, 42759] -> [0, 42963]`` rows); anything else (prose notes, the author trailer, unknown rows) is skipped silently.
+Newest version section first; shapes: 版本 x -> y headers, 【name/name】 groups,
+IB lines (several -> specs /, optional （label） and ※ notes), child rows
+(<role>: <old> -> <new>, incl. object_indexes [..] -> [..]); the rest skips.
 """
 
 import re
@@ -26,7 +28,8 @@ _VERSION_TAG_RE = re.compile(r"v\d+(?:\.\d+)*(?:热更新)?")
 def parse_changelog(text: str) -> list[ChangeEntry]:
     """Parse the changelog text into chronologically ordered change entries.
 
-    Version sections appear newest-first in the file, so version_index is assigned bottom-up: the oldest section gets 1, and the returned list is ascending (oldest first).
+    Version sections sit newest-first in the file, so version_index is assigned
+    bottom-up (oldest = 1) and the returned list is ascending (oldest first).
     """
     pre_entries: list[ChangeEntry] = []
     sections: list[tuple[str, list[ChangeEntry]]] = []
@@ -174,7 +177,9 @@ def parse_face_texcoord_transitions_file(path: Path) -> dict[str, str]:
 def parse_face_texcoord_transitions(text: str) -> dict[str, str]:
     """Map from_hash -> to_hash for texcoord child lines under face-labeled IB lines.
 
-    A child line belongs to the nearest preceding "IB: ...（label）" line of its character group; only labels containing 脸 (face) qualify, and version headers and character groups reset the context. The first edge per from-hash wins (the file is newest-first, so that is the most recent transition).
+    A child line belongs to the nearest preceding "IB: ...（label）" line; only
+    labels containing 脸 qualify (headers/groups reset context); the first edge
+    per from-hash wins (newest-first, so the most recent).
     """
     transitions: dict[str, str] = {}
     label = ""
@@ -223,7 +228,7 @@ def parse_face_texcoord_transitions(text: str) -> dict[str, str]:
 def build_chain_index(entries: list[ChangeEntry]) -> dict[str, list[ChangeEntry]]:
     """Map from_hash -> entries with that from_hash, sorted ascending by version_index.
 
-    Entries without a from_hash, and from_hash values that are not 8 hex characters, are excluded.
+    Entries without an 8-hex from_hash are excluded.
     """
     index: dict[str, list[ChangeEntry]] = {}
     for entry in entries:
@@ -239,7 +244,8 @@ def build_chain_index(entries: list[ChangeEntry]) -> dict[str, list[ChangeEntry]
 def _parse_ib_line(rest: str) -> tuple[list[str], str | None, str | None] | None:
     """Parse the text after "IB:" on one IB line.
 
-    Returns (from_hashes, to_hash, component_label); to_hash is None when the line carries no transition (several IBs whose only children changed); malformed lines return None.
+    Returns (from_hashes, to_hash, component_label); to_hash None when no
+    transition (several IBs whose only children changed); malformed -> None.
     """
     parts = ARROW_SPLIT_RE.split(rest.strip(), maxsplit=1)
     if len(parts) != 2:
@@ -276,7 +282,8 @@ def _parse_int_list(bracketed: str) -> list[int] | None:
 def _group_characters(header: str) -> list[str]:
     """Normalized character names from the text inside one 【...】 header.
 
-    Tokens are split on "/" and " - "; version tags like "v3.01热更新" and tokens without any CJK or ASCII letter (e.g. "5" in "5/13热更新") are dropped.
+    Tokens split on "/" and " - "; version tags ("v3.01热更新") and letter-less
+    tokens (e.g. "5") drop.
     """
     names: list[str] = []
     for part in header.split("/"):

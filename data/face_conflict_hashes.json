@@ -1,0 +1,17 @@
+{
+  "source": "hefengchang/ZZZ-Model-Fix-Tool 脸部冲突修复工具 vb.txt (绿林小子, caimogu.cc)",
+  "notes": "Extend by appending a character object; hashes are lowercase 8-hex; old and new game-version hashes may coexist per key.",
+  "characters": [
+    {
+      "name": "露西 Lucy",
+      "position_vb": ["6c733c84"],
+      "position_wallpaper_vb": ["39cfd24c", "9b4dfd86"],
+      "blend_vb": ["a37c7537", "5315f036"]
+    },
+    {
+      "name": "青衣 Qingyi",
+      "position_vb": ["a5783704"],
+      "blend_vb": ["57c9f0a3"]
+    }
+  ]
+}

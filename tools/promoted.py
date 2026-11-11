@@ -17,9 +17,9 @@ def canonical_key(relative: str) -> str:
 
 
 def load_promoted(root: Path | None = None) -> dict[str, str]:
-    """Read {mod relative path: image relative name} from state.json; {} on missing, undecodable or non-dict JSON.
+    """Read {mod relative path: image name} from state.json; {} on unreadable JSON.
 
-    Keys are canonicalized on read, healing pre-canonical entries that still carry a raw DISABLED_ leaf.
+    Keys canonicalize on read, healing entries still carrying a raw DISABLED_ leaf.
     """
     promoted: dict[str, str] = {}
     section = load_state(root)["promoted"]
@@ -40,7 +40,9 @@ def retarget_promoted_paths(
 ) -> int:
     """Rewrite stored keys for renamed folders; returns the changed count.
 
-    Keys equal to an old path or under it swap that prefix for the new one; mod renames match exactly, category renames cover nested keys, and old paths also match their canonical DISABLED_-leaf-stripped form.
+    Keys equal to an old path or under it swap that prefix for the new one; mod
+    renames match exactly, category renames cover nested keys, and old paths also
+    match their canonical DISABLED_-leaf-stripped form.
     """
     valid: list[tuple[str, str]] = []
     for old, new in swaps:
@@ -73,7 +75,9 @@ def retarget_promoted_paths(
 def remove_promoted_paths(paths: Iterable[str], root: Path | None = None) -> int:
     """Remove stored keys for deleted mods or categories; returns the removed count.
 
-    A key is removed when it equals one of the given paths or under it; exact matches cover mod deletions, prefix matches cover nested keys in category deletions, and given paths also match their canonical DISABLED_-leaf-stripped form.
+    Keys equal to a given path or under it are removed (exact = mod deletions,
+    prefix = nested category keys); given paths also match their canonical
+    DISABLED_-leaf-stripped form.
     """
     old_paths = [
         cleaned for cleaned in (canonical_key(path) for path in paths) if cleaned

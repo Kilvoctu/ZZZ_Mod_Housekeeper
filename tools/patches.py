@@ -1,6 +1,8 @@
 """Parse user quick hash-patch files from the app data folder.
 
-Every *.txt directly inside data/ (not subfolders) may list quick hash renames, one per line ("old to new"; the separator may be "to", "->" or "→"); blank lines and lines starting with "#" are skipped, malformed lines are ignored, and later lines and later files override earlier ones.
+Every *.txt directly inside data/ (not subfolders) lists "old to new" renames
+(separators "to", "->" or "→"); blanks and #-lines skip, malformed lines skip,
+later lines and later files override earlier ones.
 """
 
 import re
@@ -20,7 +22,8 @@ def user_patches_dir() -> Path:
 def parse_user_patches(text: str) -> dict[str, ChangeEntry]:
     """Parse one patch file's text into {old_hash: ChangeEntry}, keyed by from_hash.
 
-    Each valid line is one "old to new" rename with role "user"; malformed lines are skipped and later lines override earlier ones.
+    Each valid line is one "old to new" rename with role "user"; malformed lines
+    skip and later lines override earlier ones.
     """
     patches: dict[str, ChangeEntry] = {}
     for line in text.splitlines():

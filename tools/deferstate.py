@@ -1,12 +1,13 @@
 """Marker store for cross-mod conflict fixes the app auto-applied on a mod enable.
 
-Conflict fixes wrapping sections in ``if $flag == 0`` guards or unifying ``override_vertex_count``
-lines are recorded next to the fix-backup chains so disabling a mod surgically undoes them; applying stays with apply_plan."""
+Guard wraps (``if $flag == 0``) and ``override_vertex_count`` unifies record beside the
+fix-backup chains, so disabling a mod surgically undoes them; apply_plan applies.
+"""
 
 import json
 import re
 from collections.abc import Callable, Sequence
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from .backups import (
@@ -72,10 +73,10 @@ def canonical_file(mods_dir: Path, path: Path) -> str:
 def record(store_dir: Path, mods_dir: Path, wraps: Sequence, unifies: Sequence) -> None:
     """Append entries derived from deference specs; identical entries are skipped.
 
-    One wrap entry per guard spec and one unify entry per rewrite spec, each timestamped (UTC isoformat) at recording time;
-    the state is written back only when something new was added."""
+    One entry per wrap/unify spec, UTC-isoformat timestamped at recording time; state
+    writes back only when something new was added."""
     state = load_state(store_dir, mods_dir)
-    applied = datetime.now(timezone.utc).isoformat()
+    applied = datetime.now(UTC).isoformat()
     changed = False
     for spec in wraps:
         entry = {
@@ -114,8 +115,8 @@ def undo_for_mod(
 ) -> int:
     """Surgically revert the recorded auto-fixes involving one mod; returns edits undone.
 
-    An entry matches when its involved-mods set contains the mod name (DISABLED_ prefix and case ignored);
-    undone and stale entries are pruned in place and the pruned state is written back once at the end."""
+    An entry matches when its involved-mods set contains the name (DISABLED_ and case
+    ignored); undone and stale entries prune in place, state written back once at end."""
     state = load_state(store_dir, mods_root)
     target = str(mod_name).strip().removeprefix(_DISABLED_TOGGLE).casefold()
     undone = 0
